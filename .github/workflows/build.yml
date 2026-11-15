@@ -1,0 +1,45 @@
+name: Build PS3 package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Image built from ps3dev/ps3dev-docker (toolchain + PSL1GHT).
+      - name: Build inside ps3dev container
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src zeldin/ps3dev-docker:latest bash -euxc '
+            echo "PS3DEV=$PS3DEV PSL1GHT=$PSL1GHT"
+            P=$PS3DEV/portlibs/ppu/lib
+            ls $P || true
+            missing=""
+            [ -f $P/libmad.a ]     || missing="$missing 019-libmad-0.15.1b.sh"
+            [ -f $P/libmbedtls.a ] || missing="$missing 018-mbedTLS-2.28.10.sh"
+            [ -f $P/libcurl.a ]    || missing="$missing 028-libcurl-7.64.1.sh"
+            if [ -n "$missing" ]; then
+              (command -v wget >/dev/null && command -v git >/dev/null) || (apt-get update && apt-get install -y wget git patch xz-utils bzip2 autoconf automake libtool pkg-config)
+              git clone --depth 1 https://github.com/ps3dev/ps3libraries.git /tmp/ps3libraries
+              cd /tmp/ps3libraries/scripts
+              for s in $missing; do bash ./$s; done
+              cd /src
+            fi
+            make pkg
+          '
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp radio-garden-ps3.pkg radio-garden-ps3.self dist/ 2>/dev/null || true
+          cp radio-garden-ps3.gnpdrm.pkg radio-garden-ps3.fake.self dist/ 2>/dev/null || true
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: radio-garden-ps3
+          path: dist/*
