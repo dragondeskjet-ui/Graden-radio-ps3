@@ -22,6 +22,8 @@ jobs:
             [ -f $P/libmad.a ]     || missing="$missing 019-libmad-0.15.1b.sh"
             [ -f $P/libmbedtls.a ] || missing="$missing 018-mbedTLS-2.28.10.sh"
             [ -f $P/libcurl.a ]    || missing="$missing 028-libcurl-7.64.1.sh"
+            [ -f $P/libfaad.a ]    || missing="$missing 021-faad2-2.7.sh"
+            [ -f $P/libvorbisfile.a ] || missing="$missing 007-libogg-1.3.4.sh 008-libvorbis-1.3.5.sh"
             if [ -n "$missing" ]; then
               (command -v wget >/dev/null && command -v git >/dev/null) || (apt-get update && apt-get install -y wget git patch xz-utils bzip2 autoconf automake libtool pkg-config)
               git clone --depth 1 https://github.com/ps3dev/ps3libraries.git /tmp/ps3libraries

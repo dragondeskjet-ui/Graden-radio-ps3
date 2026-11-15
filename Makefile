@@ -20,7 +20,7 @@ CFLAGS		=	-O2 -Wall -mcpu=cell $(MACHDEP) $(INCLUDE)
 CXXFLAGS	=	$(CFLAGS) -fno-exceptions -fno-rtti
 LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
 
-LIBS		:=	-lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lmad -lrsx -lgcm_sys -laudio -lnet -lio -lsysutil -lsysmodule -lrt -llv2 -lm
+LIBS		:=	-lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lmad -lfaad -lvorbisfile -lvorbis -logg -lrsx -lgcm_sys -laudio -lnet -lio -lsysutil -lsysmodule -lrt -llv2 -lm
 
 LIBDIRS		:=	$(PORTLIBS)
 

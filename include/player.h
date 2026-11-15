@@ -8,6 +8,7 @@ void player_play(const char *url);   /* stops current stream first */
 void player_stop();
 PState player_state();
 const char *player_message();
+const char *player_format();   /* "MP3", "AAC", "OGG", "HLS" */
 void player_set_volume(float v);     /* 0..1 */
 float player_get_volume();
 #endif

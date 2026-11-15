@@ -12,5 +12,6 @@ GitHub Actions compila en cada push (artefacto `radio-garden-ps3`: `.pkg` para i
 Local: `export PS3DEV=... PSL1GHT=...; make pkg` (requiere libcurl, mbedTLS y libmad de ps3libraries).
 
 ## Limitaciones
-- Solo streams MP3 (AAC/HLS se muestran como "Formato no soportado").
+- Formatos: MP3, AAC/HE-AAC (ADTS), Ogg Vorbis, HLS (TS o AAC empaquetado), listas PLS/M3U.
+- No soportado: Opus, AAC dentro de MP4, HLS cifrado o fMP4.
 - Fuente bitmap derivada de DejaVu Sans Mono.

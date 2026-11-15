@@ -114,7 +114,8 @@ static void draw_bar()
 	char line[200];
 	if (st == P_IDLE) snprintf(line, sizeof line, "Sin reproducir");
 	else if (st == P_ERROR) snprintf(line, sizeof line, "Error: %s", player_message());
-	else snprintf(line, sizeof line, "%s%s  -  %s", st == P_PLAYING ? "> " : "... ", playing_name, playing_place);
+	else if (st == P_PLAYING) snprintf(line, sizeof line, "> [%s] %s  -  %s", player_format(), playing_name, playing_place);
+	else snprintf(line, sizeof line, "... %s  (%s)", playing_name, player_message());
 	gfx_text(12 * S, y + 4 * S, line, st == P_ERROR ? C_ERR : C_ACC, S);
 	char vol[40]; snprintf(vol, sizeof vol, "Vol %d%%  TLS %s", (int)(player_get_volume() * 100 + 0.5f), g_tls_verify ? "ok" : "OFF");
 	gfx_text(display_width - gfx_text_width(vol, S) - 12 * S, y + 4 * S, vol, C_DIM, S);
@@ -239,7 +240,8 @@ int main(int argc, const char *argv[])
 			l1 |= pdata.BTN_L1; r1 |= pdata.BTN_R1; l2 |= pdata.BTN_L2; r2 |= pdata.BTN_R2; sel |= pdata.BTN_SELECT;
 			up |= pdata.BTN_UP; down |= pdata.BTN_DOWN; left |= pdata.BTN_LEFT; right |= pdata.BTN_RIGHT;
 			int hx = (int)pdata.ANA_L_H - 128, hy = (int)pdata.ANA_L_V - 128;
-			if (abs(hx) > 24) ax += hx; if (abs(hy) > 24) ay += hy;
+			if (abs(hx) > 24) ax += hx;
+			if (abs(hy) > 24) ay += hy;
 			break;
 		}
 		u32 btn = (x ? 1 : 0) | (o ? 2 : 0) | (tri ? 4 : 0) | (sel ? 8 : 0);
