@@ -3,3 +3,5 @@ build/
 *.self
 *.pkg
 *.map
+host/shot
+*.ppm

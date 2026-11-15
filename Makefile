@@ -45,7 +45,7 @@ export INCLUDE	:=	$(foreach dir,$(INCLUDES), -I$(CURDIR)/$(dir)) \
 					$(LIBPSL1GHT_INC) -I$(CURDIR)/$(BUILD)
 export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib) $(LIBPSL1GHT_LIB)
 
-.PHONY: $(BUILD) clean pkg
+.PHONY: $(BUILD) clean pkg shots
 
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
@@ -65,3 +65,8 @@ $(OUTPUT).elf:	$(OFILES)
 -include $(DEPENDS)
 
 endif
+
+# Host-side screenshots (real UI code + sample data): make shots
+shots:
+	g++ -O2 -std=c++17 -Ihost -Iinclude -Isource host/shot.cpp source/ui.cpp source/gfx.cpp -o host/shot
+	cd docs && ../host/shot && for i in 1 2 3 4 5; do python3 -c "from PIL import Image; Image.open('shot$$i.ppm').save('shot$$i.png')"; rm -f shot$$i.ppm; done
