@@ -11,10 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Image built from ps3dev/ps3dev-docker (toolchain + PSL1GHT).
+      # Image hldtux/ps3dev (amd64) (toolchain + PSL1GHT).
       - name: Build inside ps3dev container
         run: |
-          docker run --rm -v "$PWD:/src" -w /src zeldin/ps3dev-docker:latest bash -euxc '
+          docker run --rm -v "$PWD:/src" -w /src hldtux/ps3dev:latest bash -euxc '
             echo "PS3DEV=$PS3DEV PSL1GHT=$PSL1GHT"
             P=$PS3DEV/portlibs/ppu/lib
             ls $P || true
