@@ -237,7 +237,7 @@ bool player_init()
 	audioPortParam prm;
 	prm.numChannels = AUDIO_PORT_2CH;
 	prm.numBlocks = AUDIO_BLOCK_8;
-	prm.attr = 0;
+	prm.attrib = 0;
 	prm.level = 1;
 	if (audioPortOpen(&prm, &aport) != 0) return false;
 	if (audioGetPortConfig(aport, &acfg) != 0) return false;
