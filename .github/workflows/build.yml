@@ -41,6 +41,9 @@ jobs:
               cd /src
             fi
             make pkg
+            # list the constant/sampler names the Cg compiler actually emitted
+            for f in shaders/*.vcg; do cgcomp -v $f /tmp/x.vpo >/dev/null && echo "== $f: $(strings /tmp/x.vpo | tr "\n" " ")" || true; done
+            for f in shaders/*.fcg; do cgcomp -f $f /tmp/x.fpo >/dev/null && echo "== $f: $(strings /tmp/x.fpo | tr "\n" " ")" || true; done
           '
 
       - name: Collect artifacts

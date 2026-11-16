@@ -21,6 +21,7 @@
 #include "http.h"
 #include "api.h"
 #include "player.h"
+#include "log.h"
 
 SYS_PROCESS_PARAM(1001, 0x100000);
 
@@ -225,6 +226,8 @@ int main(int, const char **)
 	atexit(program_exit_callback);
 	sysUtilRegisterCallback(0, sysutil_exit_callback, NULL);
 	setRenderTarget(curr_fb);
+	rg_log_reset();
+	rg_log("start %ux%u", display_width, display_height);
 	gpu_init(display_width, display_height);
 	ui_init(display_width, display_height);
 
@@ -281,8 +284,11 @@ int main(int, const char **)
 		if (M.loading && job_state != 1) {
 			if (job_kind == J_PLACES) {
 				if (job_state == 2) {
+					rg_log("places loaded: %d", g_nplaces);
 					M.places = g_places; M.nplaces = g_nplaces; M.error = NULL;
-					ui_set_places(g_places, g_nplaces); build_countries(); apply_filter();
+					ui_set_places(g_places, g_nplaces); rg_log("ui_set_places ok");
+					build_countries(); rg_log("countries: %d", ncountries);
+					apply_filter(); rg_log("filter ok");
 					char t[64]; snprintf(t, sizeof t, "%d ciudades con radio", g_nplaces); toast(t);
 				} else M.error = job_err;
 			} else if (job_kind == J_STATIONS) { if (job_state == 2) { M.nst = g_nstations; M.error = NULL; } else M.error = job_err; }
@@ -426,8 +432,13 @@ int main(int, const char **)
 
 		/* the GPU renders every vblank (60 Hz); flip() waits for vsync */
 		M.frame++;
+		static int logframes = 0;
+		bool lg = M.nplaces > 0 && logframes < 3;
+		if (lg) rg_log("frame %d with places: building", logframes);
 		ui_frame(&M);
+		if (lg) rg_log("frame %d: submitted, flipping", logframes);
 		flip();
+		if (lg) { rg_log("frame %d: flip ok", logframes); logframes++; }
 
 		fps_frames++;
 		u64 t = now_us();

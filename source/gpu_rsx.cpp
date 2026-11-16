@@ -9,6 +9,7 @@
 #include <rsx/rsx.h>
 #include "rsxutil.h"
 #include "gpu.h"
+#include "log.h"
 
 #include "vs2d_vpo.h"
 #include "fs2d_fpo.h"
@@ -101,6 +102,8 @@ static void bind_tex(int unit, u32 offset, int w, int h, bool rgb565, bool linea
 	rsxTextureWrapMode(context, unit, repeat_u ? GCM_TEXTURE_REPEAT : GCM_TEXTURE_CLAMP_TO_EDGE, GCM_TEXTURE_CLAMP_TO_EDGE, GCM_TEXTURE_CLAMP_TO_EDGE, 0, GCM_TEXTURE_ZFUNC_LESS, 0);
 }
 
+static void vparam(const rsxVertexProgram *vp, const rsxProgramConst *c, const float *v) { if (c) rsxSetVertexProgramParameter(context, vp, c, v); }
+static int tex_index(rsxFragmentProgram *fp, const char *name) { rsxProgramAttrib *a = rsxFragmentProgramGetAttrib(fp, name); return a ? a->index : 0; }
 static void attr(int a, u32 off, int stride, int n) { rsxBindVertexArrayAttrib(context, a, 0, off, stride, n, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX); }
 static void attr_off(int a) { rsxBindVertexArrayAttrib(context, a, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX); }
 static void attrs_clear() { for (int a = 0; a < 16; a++) attr_off(a); }
@@ -137,13 +140,15 @@ bool gpu_init(int w, int h)
 	load_prog(PGLOBE, vsglobe_vpo, fsglobe_fpo);
 	load_prog(PDOTS, vsdots_vpo, NULL);
 	c2d_scr = rsxVertexProgramGetConst(P2D.vp, "scr");
-	u2d_tex = rsxFragmentProgramGetAttrib(P2D.fp, "tex")->index;
+	u2d_tex = tex_index(P2D.fp, "tex");
 	cg_east = rsxVertexProgramGetConst(PGLOBE.vp, "east"); cg_north = rsxVertexProgramGetConst(PGLOBE.vp, "north");
 	cg_view = rsxVertexProgramGetConst(PGLOBE.vp, "view"); cg_scr = rsxVertexProgramGetConst(PGLOBE.vp, "scr");
-	ug_tex = rsxFragmentProgramGetAttrib(PGLOBE.fp, "tex")->index;
+	ug_tex = tex_index(PGLOBE.fp, "tex");
 	cd_east = rsxVertexProgramGetConst(PDOTS.vp, "east"); cd_north = rsxVertexProgramGetConst(PDOTS.vp, "north");
 	cd_view = rsxVertexProgramGetConst(PDOTS.vp, "view"); cd_scr = rsxVertexProgramGetConst(PDOTS.vp, "scr");
 	cd_scale = rsxVertexProgramGetConst(PDOTS.vp, "dot_scale");
+	rg_log("gpu_init: 2d scr=%p | globe e=%p n=%p v=%p s=%p | dots e=%p n=%p v=%p s=%p k=%p | tex2d=%d texg=%d",
+	       c2d_scr, cg_east, cg_north, cg_view, cg_scr, cd_east, cd_north, cd_view, cd_scr, cd_scale, u2d_tex, ug_tex);
 	for (int i = 0; i < 2; i++) { sverts[i] = (SV *)rsxMemalign(128, MAX_SPRITES * 4 * sizeof(SV)); rsxAddressToOffset(sverts[i], &sverts_off[i]); }
 	build_globe_mesh();
 	earth_lo = (u16 *)rsxMemalign(128, 8 * 8 * 2);
@@ -159,6 +164,7 @@ bool gpu_load_earth(const char *path)
 	u16 *buf = (u16 *)malloc((size_t)w * h * 2);
 	bool ok = buf && fread(buf, 2, (size_t)w * h, f) == (size_t)w * h;   /* file is big-endian = native */
 	fclose(f);
+	rg_log("gpu_load_earth: read %s", ok ? "ok" : "FAILED");
 	if (!ok) { free(buf); return false; }
 	earth_hi = (u16 *)rsxMemalign(128, (size_t)w * h * 2);
 	memcpy(earth_hi, buf, (size_t)w * h * 2);
@@ -182,8 +188,9 @@ void gpu_set_places(const Place *p, int n, const float *uvd, const float *uvg)
 	/* glow quad for big cities + core quad for every city */
 	int nglow = 0; for (int i = 0; i < n; i++) if (p[i].size >= 12) nglow++;
 	int nq = n + nglow;
+	rg_log("gpu_set_places: n=%d glow=%d bytes=%u", n, nglow, (unsigned)((size_t)nq * 4 * sizeof(DV)));
 	DV *v = (DV *)rsxMemalign(128, (size_t)nq * 4 * sizeof(DV));
-	if (!v) return;
+	if (!v) { rg_log("gpu_set_places: rsxMemalign FAILED"); return; }
 	const float d = 3.14159265f / 180.f;
 	const float cxs[4] = { -1, 1, 1, -1 }, cys[4] = { -1, -1, 1, 1 };
 	int k = 0;
@@ -208,6 +215,7 @@ void gpu_set_places(const Place *p, int n, const float *uvd, const float *uvg)
 	if (dverts) rsxFree(dverts);
 	dverts = v; ndverts = k * 4;
 	rsxAddressToOffset(dverts, &dverts_off);
+	rg_log("gpu_set_places: ok quads=%d offset=0x%x", k, dverts_off);
 }
 
 static void set_env()
@@ -253,7 +261,7 @@ static void draw_sprites(const Sprite *s, int ns)
 	}
 	rsxLoadVertexProgram(context, P2D.vp, P2D.vucode);
 	float scr[4] = { 2.f / W, 2.f / H, 0, 0 };
-	rsxSetVertexProgramParameter(context, P2D.vp, c2d_scr, scr);
+	vparam(P2D.vp, c2d_scr, scr);
 	rsxLoadFragmentProgramLocation(context, P2D.fp, P2D.foff, GCM_LOCATION_RSX);
 	attrs_clear();
 	attr(GCM_VERTEX_ATTRIB_POS, voff, sizeof(SV), 2);
@@ -297,10 +305,10 @@ void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *s, i
 		blend_premul(false);
 		rsxSetDepthTestEnable(context, GCM_TRUE); rsxSetDepthFunc(context, GCM_LESS); rsxSetDepthWriteEnable(context, GCM_TRUE);
 		rsxLoadVertexProgram(context, PGLOBE.vp, PGLOBE.vucode);
-		rsxSetVertexProgramParameter(context, PGLOBE.vp, cg_east, east);
-		rsxSetVertexProgramParameter(context, PGLOBE.vp, cg_north, north);
-		rsxSetVertexProgramParameter(context, PGLOBE.vp, cg_view, view);
-		rsxSetVertexProgramParameter(context, PGLOBE.vp, cg_scr, scr);
+		vparam(PGLOBE.vp, cg_east, east);
+		vparam(PGLOBE.vp, cg_north, north);
+		vparam(PGLOBE.vp, cg_view, view);
+		vparam(PGLOBE.vp, cg_scr, scr);
 		rsxLoadFragmentProgramLocation(context, PGLOBE.fp, PGLOBE.foff, GCM_LOCATION_RSX);
 		rsxInvalidateTextureCache(context, GCM_INVALIDATE_TEXTURE);
 		bool hi = g.R * 2.f > 900.f || !earth_lo;
@@ -316,12 +324,12 @@ void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *s, i
 		/* 3. station dots (atlas texture) */
 		if (dverts && T[TEX_ATLAS].mem[0]) {
 			rsxLoadVertexProgram(context, PDOTS.vp, PDOTS.vucode);
-			rsxSetVertexProgramParameter(context, PDOTS.vp, cd_east, east);
-			rsxSetVertexProgramParameter(context, PDOTS.vp, cd_north, north);
-			rsxSetVertexProgramParameter(context, PDOTS.vp, cd_view, view);
-			rsxSetVertexProgramParameter(context, PDOTS.vp, cd_scr, scr);
+			vparam(PDOTS.vp, cd_east, east);
+			vparam(PDOTS.vp, cd_north, north);
+			vparam(PDOTS.vp, cd_view, view);
+			vparam(PDOTS.vp, cd_scr, scr);
 			float ds[4] = { g.dot_scale, 0, 0, 0 };
-			rsxSetVertexProgramParameter(context, PDOTS.vp, cd_scale, ds);
+			vparam(PDOTS.vp, cd_scale, ds);
 			rsxLoadFragmentProgramLocation(context, P2D.fp, P2D.foff, GCM_LOCATION_RSX);
 			rsxInvalidateTextureCache(context, GCM_INVALIDATE_TEXTURE);
 			bind_tex(u2d_tex, T[TEX_ATLAS].off[0], T[TEX_ATLAS].w, T[TEX_ATLAS].h, false, true, false);
@@ -330,7 +338,13 @@ void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *s, i
 			attr(GCM_VERTEX_ATTRIB_TEX0, dverts_off + 12, sizeof(DV), 2);
 			attr(GCM_VERTEX_ATTRIB_TEX1, dverts_off + 20, sizeof(DV), 3);
 			attr(GCM_VERTEX_ATTRIB_COLOR0, dverts_off + 32, sizeof(DV), 4);
-			rsxDrawVertexArray(context, GCM_TYPE_QUADS, 0, ndverts);
+			rsxInvalidateVertexCache(context);
+			for (int first = 0; first < ndverts; first += 8192) {
+				int cnt = ndverts - first < 8192 ? ndverts - first : 8192;
+				rsxDrawVertexArray(context, GCM_TYPE_QUADS, first, cnt);
+			}
+			static bool logged = false;
+			if (!logged) { logged = true; rg_log("gpu_frame: first dots draw submitted (%d vertices)", ndverts); }
 		}
 	}
 
