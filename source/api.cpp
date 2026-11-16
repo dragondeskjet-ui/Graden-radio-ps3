@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "api.h"
 #include "http.h"
 #include "json.h"
@@ -34,6 +35,7 @@ bool api_load_places(char *err, size_t errlen)
 		if (n->type != J_OBJ) continue;
 		JNode *geo = json_get(n, "geo");
 		if (!geo || geo->type != J_ARR || !geo->child || !geo->child->next) continue;
+		if ((k & 511) == 511) usleep(300);
 		Place &p = arr[k];
 		p.lon = (float)geo->child->num; p.lat = (float)geo->child->next->num;
 		cpy(p.id, sizeof p.id, json_get(n, "id"));

@@ -54,7 +54,7 @@ static void job_start(int kind, const char *arg)
 	if (job_started) { u64 r; sysThreadJoin(job_th, &r); job_started = 0; }
 	job_kind = kind; job_state = 1; job_err[0] = 0;
 	snprintf(job_arg, sizeof job_arg, "%s", arg ? arg : "");
-	if (sysThreadCreate(&job_th, job_entry, NULL, 1001, 0x80000, THREAD_JOINABLE, (char *)"rg_job") == 0) job_started = 1;
+	if (sysThreadCreate(&job_th, job_entry, NULL, 2500, 0x80000, THREAD_JOINABLE, (char *)"rg_job") == 0) job_started = 1;
 	else { job_state = 3; snprintf(job_err, sizeof job_err, "No se pudo crear el hilo"); }
 }
 

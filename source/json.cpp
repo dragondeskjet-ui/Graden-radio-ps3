@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 #include "json.h"
 
 struct Arena { char *cur; char *end; Arena *prev; };
@@ -93,6 +94,8 @@ static JNode *pval(P *p);
 
 static JNode *newnode(P *p, JType t)
 {
+	static unsigned cnt = 0;
+	if ((++cnt & 255) == 0) usleep(300);      /* let the render thread run while a big document parses */
 	JNode *n = (JNode *)aalloc(p, sizeof(JNode));
 	if (n) { memset(n, 0, sizeof(JNode)); n->type = t; }
 	return n;
