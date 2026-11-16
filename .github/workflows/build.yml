@@ -12,4 +12,4 @@ jobs:
           cat > t.fcg <<'X'
           void main(float2 uv : TEXCOORD0, float4 c : COLOR, uniform sampler2D tex, out float4 o : COLOR) { o = tex2D(tex, uv) * c; }
           X
-          docker run --rm -v "$PWD:/src" -w /src hldtux/ps3dev:latest bash -xc 'which cgcomp; ls $PS3DEV/bin | head -50; cgcomp -v t.vcg t.vpo; cgcomp -f t.fcg t.fpo; ls -l *.vpo *.fpo; ldd $(which cgcomp) | grep -i cg'
+          docker run --rm -v "$PWD:/src" -w /src hldtux/ps3dev:latest bash -xc 'cat /etc/os-release | head -3; (apt-get update -qq && (apt-get install -y -qq nvidia-cg-toolkit || (apt-get install -y -qq software-properties-common && add-apt-repository -y multiverse && apt-get update -qq && apt-get install -y -qq nvidia-cg-toolkit))) >/tmp/apt.log 2>&1; tail -3 /tmp/apt.log; ls /usr/lib/x86_64-linux-gnu/libCg* /usr/lib/libCg* 2>/dev/null; which cgcomp; ls $PS3DEV/bin | head -50; cgcomp -v t.vcg t.vpo; cgcomp -f t.fcg t.fpo; ls -l *.vpo *.fpo; ldd $(which cgcomp) | grep -i cg'
