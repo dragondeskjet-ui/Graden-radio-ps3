@@ -103,18 +103,22 @@ static char now_name[96], now_place[96], now_id[16];
 static float tgt_lon, tgt_lat, tgt_zoom; static bool anim_cam = false;
 
 static void toast(const char *t) { static char buf[96]; snprintf(buf, sizeof buf, "%s", t); M.toast = buf; M.toast_t = 90; }
-static float pxdeg() { return (float)display_width / 360.f * M.zoom; }
-
 static void find_hover()
 {
 	M.hover = -1;
 	if (!g_places || M.loading == 1) return;
-	float sc = pxdeg(), best = 18.f * 18.f * (display_height >= 900 ? 2.25f : 1.f), lim = 30.f;
+	float cx, cy; ui_view_center(&cx, &cy);
+	float unit = display_height >= 900 ? 12.f : 8.f, lim = 4.5f * unit, best = lim * lim;
 	for (int i = 0; i < g_nplaces; i++) {
-		float dx = (g_places[i].lon - M.lon) * sc, dy = (g_places[i].lat - M.lat) * sc;
-		if (dx > lim || dx < -lim || dy > lim || dy < -lim) continue;
-		float d = dx * dx + dy * dy;
-		if (d < best || (d < best * 1.5f && M.hover >= 0 && g_places[i].size > g_places[M.hover].size * 3)) { best = d; M.hover = i; }
+		float dl = g_places[i].lon - M.lon; if (dl > 180) dl -= 360; if (dl < -180) dl += 360;
+		if (fabsf(g_places[i].lat - M.lat) > 60.f / M.zoom + 1.f) continue;   /* cheap reject */
+		float x, y;
+		if (!ui_project(&M, g_places[i].lon, g_places[i].lat, &x, &y)) continue;
+		float dx = x - cx, dy = y - cy, d = dx * dx + dy * dy;
+		if (d > lim * lim) continue;
+		/* prefer bigger cities when distances are similar */
+		float score = d / (1.f + 0.15f * sqrtf((float)g_places[i].size));
+		if (score < best) { best = score; M.hover = i; }
 	}
 }
 
@@ -133,9 +137,8 @@ static void open_stations(int pi)
 	job_start(J_STATIONS, g_places[pi].id);
 	M.loading = 2; M.view = UV_STATIONS;
 	/* shift the map so the city sits in the visible area left of the panel */
-	tgt_zoom = M.zoom < 12 ? 12 : M.zoom;
-	float sc = display_width / 360.f * tgt_zoom;
-	tgt_lat = g_places[pi].lat; tgt_lon = g_places[pi].lon + (display_width * 0.21f) / sc;
+	tgt_zoom = M.zoom < 4 ? 4 : M.zoom;
+	tgt_lat = g_places[pi].lat; tgt_lon = g_places[pi].lon;
 	anim_cam = true;
 }
 
@@ -157,6 +160,7 @@ int main(int, const char **)
 	sysUtilRegisterCallback(0, sysutil_exit_callback, NULL);
 	setRenderTarget(curr_fb);
 	ui_init(display_width, display_height);
+	ui_load_earth(DATA_DIR "earth.565");
 
 	memset(&M, 0, sizeof M);
 	M.view = UV_MAP; M.lon = -30; M.lat = 15; M.zoom = 1.f; M.hover = -1;
@@ -171,7 +175,7 @@ int main(int, const char **)
 	if (!audio_ok) toast("No se pudo abrir la salida de audio");
 
 	padInfo pinfo; padData pd;
-	u32 prev = 0; int rep = 0; int save_timer = 0;
+	u32 prev = 0; int rep = 0; int save_timer = 0; int still = 0;
 
 	while (running) {
 		sysUtilCheckCallback();
@@ -211,7 +215,7 @@ int main(int, const char **)
 
 		if (M.view == UV_MAP) {
 			if (M.error && !M.loading && P(0) && net_ok) { job_start(J_PLACES, NULL); M.loading = 1; M.error = NULL; redraw = true; }
-			float sc = pxdeg(), spd = 9.f / sc;
+			float spd = 1.4f / M.zoom;
 			float mx = (D(13) ? 1.f : 0.f) - (D(12) ? 1.f : 0.f) + lx / 100.f;
 			float my = (D(10) ? 1.f : 0.f) - (D(11) ? 1.f : 0.f) - ly / 100.f;
 			if (mx || my) {
@@ -223,10 +227,10 @@ int main(int, const char **)
 			float zf = 1.f;
 			if (D(7)) zf *= 1.035f; if (D(6)) zf /= 1.035f;
 			if (ry) zf *= 1.f - ry / 128.f * 0.04f;
-			if (zf != 1.f) { M.zoom *= zf; if (M.zoom < 1) M.zoom = 1; if (M.zoom > 120) M.zoom = 120; M.map_dirty = true; anim_cam = false; save_timer = 120; }
+			if (zf != 1.f) { M.zoom *= zf; if (M.zoom < 1) M.zoom = 1; if (M.zoom > 60) M.zoom = 60; M.map_dirty = true; anim_cam = false; save_timer = 120; }
 			if (P(14) && M.nplaces) {             /* L3: random city */
 				int i = rand() % M.nplaces;
-				tgt_lon = g_places[i].lon; tgt_lat = g_places[i].lat; tgt_zoom = M.zoom < 14 ? 14 : M.zoom; anim_cam = true;
+				tgt_lon = g_places[i].lon; tgt_lat = g_places[i].lat; tgt_zoom = M.zoom < 5 ? 5 : M.zoom; anim_cam = true;
 				toast("Viajando a un lugar al azar…");
 			}
 			if (M.map_dirty) find_hover();
@@ -269,6 +273,9 @@ int main(int, const char **)
 			if (fabsf(dl) < 0.01f && fabsf(tgt_lat - M.lat) < 0.01f && fabsf(M.zoom / tgt_zoom - 1) < 0.005f) { anim_cam = false; if (M.view == UV_MAP) find_hover(); }
 			M.map_dirty = true;
 		}
+
+		if (M.map_dirty) { M.fast = true; still = 0; }
+		else if (++still == 6) { M.fast = false; M.map_dirty = true; }
 
 		/* player status */
 		M.pstate = player_state(); M.pfmt = player_format(); M.pmsg = player_message(); M.volume = player_get_volume(); M.tls = g_tls_verify;

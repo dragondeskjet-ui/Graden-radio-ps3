@@ -3,7 +3,7 @@
 Radio por internet de todo el mundo para PS3 con CFW/HEN (homebrew PSL1GHT), inspirada en [radio.garden](https://radio.garden).
 Proyecto **no oficial** y sin relación con Radio Garden; usa su API pública no documentada.
 
-| Mapa mundial | Ciudad bajo la mira |
+| Globo 3D | Ciudad bajo la mira |
 |---|---|
 | ![Mapa](docs/shot1.png) | ![Ciudad](docs/shot2.png) |
 | **Emisoras de la ciudad** | **Favoritos** |
@@ -15,7 +15,7 @@ Proyecto **no oficial** y sin relación con Radio Garden; usa su API pública no
 
 | Botón | Mapa | Lista de emisoras / Favoritos |
 |---|---|---|
-| Stick izq. / Cruceta | Mover el mapa | Elegir |
+| Stick izq. / Cruceta | Girar el globo | Elegir |
 | L1 / R1, stick der. | Zoom | Página arriba/abajo |
 | ✕ | Abrir emisoras de la ciudad | Reproducir |
 | □ | — | Añadir / quitar favorito |
@@ -35,4 +35,4 @@ No soportado: Opus, AAC dentro de MP4, HLS cifrado o fMP4.
 ## Compilar
 GitHub Actions compila en cada push; descarga el artefacto `radio-garden-ps3` (`.pkg` para instalar).
 Local: `export PS3DEV=... PSL1GHT=...; make pkg` (requiere libcurl, mbedTLS, zlib, libmad, faad2 y libvorbis de ps3libraries).
-Recursos generados: `python3 tools/gen_assets.py` (mapa de tierra GLOBE/NOAA de dominio público vía `global-land-mask`, fuente DejaVu Sans).
+Recursos generados: `python3 tools/gen_assets.py` y `python3 tools/gen_earth.py` (textura Natural Earth I y máscara de tierra GLOBE/NOAA, ambas de dominio público; fuente DejaVu Sans).

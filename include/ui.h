@@ -21,10 +21,15 @@ struct UiModel {
 	const char *toast; int toast_t;
 	bool tls; unsigned frame;
 	bool map_dirty;
+	bool fast;                /* render globe at half resolution while moving */
 };
 
 void ui_init(unsigned w, unsigned h);
 void ui_render(UiModel *m);
 int  ui_list_rows();
 bool ui_animating(const UiModel *m);
+bool ui_load_earth(const char *path);                       /* RGB565 BE 1440x720; optional */
+bool ui_project(const UiModel *m, float lon, float lat, float *x, float *y);  /* false if on far side */
+void ui_view_center(float *x, float *y);
+float ui_globe_radius(const UiModel *m);
 #endif

@@ -28,6 +28,7 @@ int main(int argc, char **argv)
 {
 	const int W = 1280, H = 720;
 	ui_init(W, H);
+	if (!ui_load_earth("../release/USRDIR/earth.565")) ui_load_earth("release/USRDIR/earth.565");
 	int N = 7000; g_places = (Place *)calloc(N + 32, sizeof(Place));
 	for (unsigned i = 0; i < sizeof named / sizeof *named; i++) { Place &p = g_places[g_nplaces++]; p.lat = named[i].lat; p.lon = named[i].lon; snprintf(p.title, sizeof p.title, "%s", named[i].t); snprintf(p.country, sizeof p.country, "%s", named[i].c); p.size = named[i].n; snprintf(p.id, sizeof p.id, "N%u", i); }
 	while (g_nplaces < N) {
@@ -55,23 +56,23 @@ int main(int argc, char **argv)
 		fclose(f);
 	};
 	// 1: world map, playing
-	m.view = UV_MAP; m.lon = -20; m.lat = 15; m.zoom = 1.0f; m.map_dirty = true;
+	m.view = UV_MAP; m.lon = -62; m.lat = 8; m.zoom = 1.0f; m.map_dirty = true;
 	m.pstate = P_PLAYING; m.pfmt = "AAC"; m.now_name = "Radio Demo Madrid"; m.now_place = "Madrid, España"; m.now_id = "F1";
 	ui_render(&m); save("shot1.ppm");
 	// 2: zoomed Amazon, hover Santarém, idle
-	m.lon = -54.71f; m.lat = -2.44f; m.zoom = 22; m.map_dirty = true; m.hover = 0; m.pstate = P_IDLE;
+	m.lon = -54.71f; m.lat = -2.44f; m.zoom = 9; m.map_dirty = true; m.hover = 0; m.pstate = P_IDLE;
 	ui_render(&m); save("shot2.ppm");
 	// 3: stations panel, playing
-	m.view = UV_STATIONS; m.panel_place = &g_places[0]; m.st_sel = 2; m.st_top = 0; m.map_dirty = true; m.lon = -48; m.zoom = 14;
+	m.view = UV_STATIONS; m.panel_place = &g_places[0]; m.st_sel = 2; m.st_top = 0; m.map_dirty = true; m.lon = -54.71f; m.lat = -2.44f; m.zoom = 4;
 	m.pstate = P_PLAYING; m.pfmt = "MP3"; m.now_name = "Rádio Exemplo FM"; m.now_place = "Santarém, PA, Brasil"; m.now_id = "S0";
 	m.toast = "Añadido a favoritos"; m.toast_t = 40;
 	ui_render(&m); save("shot3.ppm");
 	// 4: favorites, buffering
 	m.view = UV_FAVS; m.fav_sel = 1; m.toast_t = 0; m.pstate = P_BUFFERING; m.pmsg = "Cargando buffer..."; m.now_name = "Radio Demo Madrid"; m.now_place = "Madrid, España"; m.now_id = "F1";
-	m.lon = -20; m.lat = 20; m.zoom = 2.2f; m.map_dirty = true;
+	m.lon = -10; m.lat = 25; m.zoom = 1.6f; m.map_dirty = true;
 	ui_render(&m); save("shot4.ppm");
 	// 5: map loading
-	m.view = UV_MAP; m.nplaces = 0; m.loading = 1; m.hover = -1; m.pstate = P_IDLE; m.lon = 10; m.lat = 20; m.zoom = 1; m.map_dirty = true;
+	m.view = UV_MAP; m.nplaces = 0; m.loading = 1; m.hover = -1; m.pstate = P_IDLE; m.lon = 20; m.lat = 15; m.zoom = 1; m.map_dirty = true;
 	ui_render(&m); save("shot5.ppm");
 	return 0;
 }
