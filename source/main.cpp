@@ -9,7 +9,6 @@
 #include <ppu-types.h>
 #include <sys/process.h>
 #include <sys/thread.h>
-#include <sys/sem.h>
 #include <sys/systime.h>
 #include <io/pad.h>
 #include <rsx/rsx.h>
@@ -17,6 +16,7 @@
 
 #include "rsxutil.h"
 #include "gfx.h"
+#include "gpu.h"
 #include "ui.h"
 #include "http.h"
 #include "api.h"
@@ -33,36 +33,6 @@ static volatile int running = 1;
 extern "C" {
 static void program_exit_callback() { sysUtilUnregisterCallback(SYSUTIL_EVENT_SLOT0); gcmSetWaitFlip(context); rsxFinish(context, 1); }
 static void sysutil_exit_callback(u64 status, u64, void *) { if (status == SYSUTIL_EXIT_GAME) running = 0; }
-}
-
-/* ---------- second hardware thread for rendering ---------- */
-static sys_sem_t sem_go, sem_done;
-static UiJob w_job; static void *w_arg; static volatile int w_quit = 0; static int w_ok = 0;
-static void worker(void *)
-{
-	while (!w_quit) {
-		sysSemWait(sem_go, 0);
-		if (w_quit) break;
-		w_job(1, w_arg);
-		sysSemPost(sem_done, 1);
-	}
-	sysThreadExit(0);
-}
-static void par_run(UiJob job, void *arg)
-{
-	if (!w_ok) { job(0, arg); job(1, arg); return; }
-	w_job = job; w_arg = arg;
-	sysSemPost(sem_go, 1);
-	job(0, arg);
-	sysSemWait(sem_done, 0);
-}
-static void worker_start()
-{
-	sys_sem_attr_t a; memset(&a, 0, sizeof a);
-	a.attr_protocol = SYS_SEM_ATTR_PROTOCOL; a.attr_pshared = SYS_SEM_ATTR_PSHARED;
-	sys_ppu_thread_t th;
-	if (sysSemCreate(&sem_go, &a, 0, 1) == 0 && sysSemCreate(&sem_done, &a, 0, 1) == 0 &&
-	    sysThreadCreate(&th, worker, NULL, 1000, 0x10000, 0, (char *)"rg_render") == 0) { w_ok = 1; ui_set_parallel(par_run); }
 }
 
 static u64 now_us() { u64 s, ns; sysGetCurrentTime(&s, &ns); return s * 1000000ull + ns / 1000; }
@@ -188,14 +158,16 @@ static void apply_filter()
 static void conf_save(const UiModel &m)
 {
 	FILE *f = fopen(CONF_FILE, "w"); if (!f) return;
-	fprintf(f, "%f %f %f %f %d\n", m.lon, m.lat, m.zoom, player_get_volume(), (int)g_tls_verify);
+	fprintf(f, "%f %f %f %f %d %d %d %d %d\n", m.lon, m.lat, m.zoom, player_get_volume(), (int)g_tls_verify, m.theme, m.ar, m.ag, m.ab);
 	fclose(f);
 }
 static void conf_load(UiModel &m)
 {
 	FILE *f = fopen(CONF_FILE, "r"); if (!f) return;
-	float lo, la, z, v; int t;
-	if (fscanf(f, "%f %f %f %f %d", &lo, &la, &z, &v, &t) == 5) { m.lon = lo; m.lat = la; m.zoom = z < 1 ? 1 : (z > 40 ? 40 : z); player_set_volume(v); g_tls_verify = t; }
+	float lo, la, z, v; int t, th = 0, r = 255, g = 194, b = 75;
+	int n = fscanf(f, "%f %f %f %f %d %d %d %d %d", &lo, &la, &z, &v, &t, &th, &r, &g, &b);
+	if (n >= 5) { m.lon = lo; m.lat = la; m.zoom = z < 1 ? 1 : (z > 40 ? 40 : z); player_set_volume(v); g_tls_verify = t; }
+	if (n >= 9) { m.theme = th % UI_NTHEMES; m.ar = r & 255; m.ag = g & 255; m.ab = b & 255; }
 	fclose(f);
 }
 
@@ -253,27 +225,28 @@ int main(int, const char **)
 	atexit(program_exit_callback);
 	sysUtilRegisterCallback(0, sysutil_exit_callback, NULL);
 	setRenderTarget(curr_fb);
+	gpu_init(display_width, display_height);
 	ui_init(display_width, display_height);
-	worker_start();
 
 	memset(&M, 0, sizeof M);
 	M.view = UV_MAP; M.lon = -30; M.lat = 15; M.zoom = 1.f; M.hover = -1;
-	M.stations = g_stations; M.favs = favs; M.is_fav = is_fav; M.map_dirty = true; M.ui_dirty = true;
+	M.stations = g_stations; M.favs = favs; M.is_fav = is_fav; M.ui_dirty = true;
 	M.now_name = now_name; M.now_place = now_place; M.now_id = now_id; M.query = query;
-	/* first frame while the 16 MB texture loads */
-	ui_render(&M); gfx_present(color_buffer[curr_fb]); flip();
-	if (!ui_load_earth(DATA_DIR "earth.565")) toast("No se encontró earth.565 (globo sin textura)");
-	M.map_dirty = true;
+	M.ar = 0xFF; M.ag = 0xC2; M.ab = 0x4B;
+	conf_load(M);
+	/* first frame while the 16 MB texture loads into video memory */
+	ui_frame(&M); flip();
+	if (!gpu_load_earth(DATA_DIR "earth.565")) toast("No se encontró earth.565 (globo sin textura)");
 
 	bool net_ok = http_init();
 	bool audio_ok = player_init();
-	favs_load(); conf_load(M);
+	favs_load();
 	if (net_ok) { job_start(J_PLACES, NULL); M.loading = 1; }
 	else M.error = "Red no disponible. Revisa la conexión de la PS3.";
 	if (!audio_ok) toast("No se pudo abrir la salida de audio");
 
 	padInfo pinfo; padData pd;
-	u32 prev = 0; int rep = 0, save_timer = 0, still = 0, last_hover = -2, last_state = -1;
+	u32 prev = 0; int rep = 0, save_timer = 0, still = 0, last_hover = -2, last_state = -1, last_nst = -1;
 	float last_vol = -1; int fps_frames = 0; u64 fps_t0 = now_us();
 
 	while (running) {
@@ -302,13 +275,13 @@ int main(int, const char **)
 			if (rep == 0 || (rep > 24 && rep % 5 == 0)) { stepup = D(10) || ly < -60; stepdn = D(11) || ly > 60; stepl = D(12); stepr = D(13); }
 			rep++;
 		} else rep = 0;
-		bool uidirty = pr != 0;
+		bool uidirty = pr != 0 || stepup || stepdn || stepl || stepr;
 
 		/* background jobs */
 		if (M.loading && job_state != 1) {
 			if (job_kind == J_PLACES) {
 				if (job_state == 2) {
-					M.places = g_places; M.nplaces = g_nplaces; M.error = NULL; M.map_dirty = true;
+					M.places = g_places; M.nplaces = g_nplaces; M.error = NULL;
 					ui_set_places(g_places, g_nplaces); build_countries(); apply_filter();
 					char t[64]; snprintf(t, sizeof t, "%d ciudades con radio", g_nplaces); toast(t);
 				} else M.error = job_err;
@@ -320,7 +293,7 @@ int main(int, const char **)
 		if (P(2)) { player_stop(); toast("Detenido"); }
 		if (P(15)) { g_tls_verify = !g_tls_verify; toast(g_tls_verify ? "Verificación TLS activada" : "Verificación TLS desactivada"); save_timer = 60; }
 		if (D(8) || D(9)) { player_set_volume(player_get_volume() + (D(9) ? 0.01f : -0.01f)); save_timer = 120; }
-		if (P(4) && !M.kb_open) { M.view = M.view == UV_FAVS ? UV_MAP : UV_FAVS; M.fav_sel = M.fav_top = 0; }
+		if (P(4) && !M.kb_open) { M.view = M.view == UV_MENU ? UV_MAP : UV_MENU; }
 		if (P(5) && !M.kb_open) { if (M.view == UV_COUNTRIES || M.view == UV_CITIES) M.view = UV_MAP; else { M.view = UV_COUNTRIES; apply_filter(); M.c_sel = M.c_top = 0; } }
 
 		bool moved = false;
@@ -339,7 +312,7 @@ int main(int, const char **)
 			if (P(0) && M.hover >= 0 && !M.loading) open_stations(M.hover, UV_MAP);
 		} else if (M.view == UV_STATIONS) {
 			if (P(1)) { M.view = back_from_stations; anim_cam = false; }
-			int rows = ui_list_rows_ex(false, true);
+			int rows = ui_rows(&M);
 			list_nav(&M.st_sel, &M.st_top, M.nst, rows, stepup, stepdn, P(6), P(7));
 			if (M.nst > 0 && !M.loading) {
 				const Station &s = g_stations[M.st_sel];
@@ -349,7 +322,7 @@ int main(int, const char **)
 			}
 		} else if (M.view == UV_FAVS) {
 			if (P(1)) M.view = UV_MAP;
-			int rows = ui_list_rows_ex(false, true);
+			int rows = ui_rows(&M);
 			list_nav(&M.fav_sel, &M.fav_top, nfav, rows, stepup, stepdn, P(6), P(7));
 			if (nfav > 0) {
 				Fav f = favs[M.fav_sel];
@@ -378,7 +351,7 @@ int main(int, const char **)
 			} else {
 				if (P(1)) M.view = UV_MAP;
 				if (P(3)) { M.kb_open = true; M.kb_sel = 0; }
-				int rows = ui_list_rows_ex(true, false);
+				int rows = ui_rows(&M);
 				list_nav(&M.c_sel, &M.c_top, ncfilter, rows, stepup, stepdn, P(6), P(7));
 				if (P(0) && ncfilter > 0) {
 					M.cur_country = cfilter[M.c_sel];
@@ -390,9 +363,32 @@ int main(int, const char **)
 			M.clist = cfilter; M.nclist = ncfilter;
 		} else if (M.view == UV_CITIES) {
 			if (P(1)) M.view = UV_COUNTRIES;
-			int rows = ui_list_rows_ex(false, false);
+			int rows = ui_rows(&M);
 			if (list_nav(&M.city_sel, &M.city_top, M.ncity, rows, stepup, stepdn, P(6), P(7))) fly_to(g_places[M.city_idx[M.city_sel]], M.zoom);
 			if (P(0) && M.ncity > 0) open_stations(M.city_idx[M.city_sel], UV_CITIES);
+		} else if (M.view == UV_MENU) {
+			if (P(1)) M.view = UV_MAP;
+			int top = 0;
+			list_nav(&M.menu_sel, &top, UI_MENU_N, UI_MENU_N, stepup, stepdn, false, false);
+			int dir = stepr ? 1 : (stepl ? -1 : 0);
+			/* hold left/right on colour sliders for fast changes */
+			if (!dir && (D(12) || D(13)) && (M.menu_sel == MENU_R || M.menu_sel == MENU_G || M.menu_sel == MENU_B)) dir = D(13) ? 3 : -3;
+			if (dir) {
+				int *c = M.menu_sel == MENU_R ? &M.ar : (M.menu_sel == MENU_G ? &M.ag : (M.menu_sel == MENU_B ? &M.ab : NULL));
+				if (c) { *c += dir * (abs(dir) == 1 ? 5 : 1); if (*c < 0) *c = 0; if (*c > 255) *c = 255; save_timer = 90; uidirty = true; }
+				if (M.menu_sel == MENU_THEME && (stepl || stepr)) { M.theme = (M.theme + UI_NTHEMES + (stepr ? 1 : -1)) % UI_NTHEMES; save_timer = 30; }
+				if (M.menu_sel == MENU_TLS && (stepl || stepr)) { g_tls_verify = !g_tls_verify; save_timer = 30; }
+			}
+			if (P(0)) {
+				switch (M.menu_sel) {
+				case MENU_FAVS: M.view = UV_FAVS; M.fav_sel = M.fav_top = 0; break;
+				case MENU_COUNTRIES: M.view = UV_COUNTRIES; apply_filter(); M.c_sel = M.c_top = 0; break;
+				case MENU_THEME: M.theme = (M.theme + 1) % UI_NTHEMES; save_timer = 30; break;
+				case MENU_TLS: g_tls_verify = !g_tls_verify; save_timer = 30; break;
+				case MENU_RANDOM: if (M.nplaces) { M.view = UV_MAP; fly_to(g_places[rand() % M.nplaces], 5); } break;
+				default: break;
+				}
+			}
 		}
 		M.nfav = nfav;
 
@@ -411,13 +407,14 @@ int main(int, const char **)
 			if (fabsf(dl) < 0.005f && fabsf(tgt_lat - M.lat) < 0.005f && fabsf(M.zoom / tgt_zoom - 1) < 0.003f) anim_cam = false;
 			moved = true;
 		}
-		if (moved) { M.map_dirty = true; save_timer = 120; still = 0; }
+		if (moved) { save_timer = 120; still = 0; }
 		else still++;
 
 		/* hover only matters on the map; panel follows it */
 		int hv = M.view == UV_MAP ? ui_pick(&M) : -1;
 		if (hv != last_hover) { last_hover = hv; M.hover = hv; uidirty = true; }
-		if (still == 10) uidirty = true;     /* refresh "Cerca de aquí" once the globe stops */
+		if (still == 10 && M.view == UV_MAP) uidirty = true;     /* refresh "Cerca de aquí" once the globe stops */
+		if (M.nst != last_nst) { last_nst = M.nst; uidirty = true; }
 
 		/* player status */
 		M.pstate = player_state(); M.pfmt = player_format(); M.pmsg = player_message(); M.volume = player_get_volume(); M.tls = g_tls_verify;
@@ -427,10 +424,9 @@ int main(int, const char **)
 		if (save_timer > 0 && --save_timer == 0) conf_save(M);
 		if (uidirty) M.ui_dirty = true;
 
-		/* render every vblank (60 Hz); flip() waits for vsync */
+		/* the GPU renders every vblank (60 Hz); flip() waits for vsync */
 		M.frame++;
-		ui_render(&M);
-		gfx_present(color_buffer[curr_fb]);
+		ui_frame(&M);
 		flip();
 
 		fps_frames++;
@@ -439,7 +435,6 @@ int main(int, const char **)
 	}
 
 	conf_save(M);
-	w_quit = 1; if (w_ok) sysSemPost(sem_go, 1);
 	player_shutdown();
 	http_shutdown();
 	return 0;

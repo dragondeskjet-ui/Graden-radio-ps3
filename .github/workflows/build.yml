@@ -21,6 +21,9 @@ jobs:
       - name: Build inside ps3dev container
         run: |
           docker run --rm -v "$PWD:/src" -w /src hldtux/ps3dev:latest bash -euxc '
+            # NVIDIA Cg runtime for cgcomp (Debian non-free)
+            sed -i "s/^Components: main.*/Components: main contrib non-free/" /etc/apt/sources.list.d/debian.sources
+            apt-get update -qq && apt-get install -y -qq libcg >/dev/null
             echo "PS3DEV=$PS3DEV PSL1GHT=$PSL1GHT"
             P=$PS3DEV/portlibs/ppu/lib
             ls $P || true

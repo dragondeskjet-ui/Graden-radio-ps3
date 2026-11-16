@@ -17,28 +17,41 @@ void gfx_init(u32 w, u32 h)
 u32 *gfx_buffer() { return backbuf; }
 void gfx_set_target(u32 *b) { fb = b ? b : backbuf; }
 
+/* All targets are premultiplied ARGB (0xAARRGGBB). Source colour is straight RGB + coverage a.
+ * out = src*a + dst*(1-a), alpha channel included. Opaque framebuffers just keep A=255. */
+static int CX0 = 0, CY0 = 0, CX1 = 1 << 30, CY1 = 1 << 30;
 static inline u32 blend(u32 d, u32 s, int a)
 {
-	if (a >= 255) return s;
+	if (a >= 255) return 0xFF000000u | (s & 0xFFFFFF);
 	if (a <= 0) return d;
-	u32 rb = ((((s & 0xFF00FF) * a) + ((d & 0xFF00FF) * (255 - a))) >> 8) & 0xFF00FF;
-	u32 g  = ((((s & 0x00FF00) * a) + ((d & 0x00FF00) * (255 - a))) >> 8) & 0x00FF00;
-	return rb | g;
+	u32 ia = 255 - a;
+	u32 rb = (((s & 0xFF00FF) * a + (d & 0xFF00FF) * ia) >> 8) & 0xFF00FF;
+	u32 g  = (((s & 0x00FF00) * a + (d & 0x00FF00) * ia) >> 8) & 0x00FF00;
+	u32 al = (u32)a + (((d >> 24) * ia) >> 8); if (al > 255) al = 255;
+	return (al << 24) | rb | g;
 }
-static inline void px(int x, int y, u32 c, int a) { if ((unsigned)x < (unsigned)W && (unsigned)y < (unsigned)H) { u32 *p = fb + y * W + x; *p = blend(*p, c, a); } }
+static inline void px(int x, int y, u32 c, int a)
+{
+	if (x < CX0 || y < CY0 || x >= CX1 || y >= CY1) return;
+	if ((unsigned)x < (unsigned)W && (unsigned)y < (unsigned)H) { u32 *p = fb + y * W + x; *p = blend(*p, c, a); }
+}
+void gfx_clip(int x, int y, int w, int h) { CX0 = x; CY0 = y; CX1 = x + w; CY1 = y + h; }
+void gfx_noclip() { CX0 = 0; CY0 = 0; CX1 = 1 << 30; CY1 = 1 << 30; }
 
-void gfx_clear(u32 rgb) { for (int i = 0; i < W * H; i++) fb[i] = rgb; }
+void gfx_clear(u32 argb) { for (int i = 0; i < W * H; i++) fb[i] = argb; }
 
 static bool clip(int &x, int &y, int &w, int &h)
 {
-	if (x < 0) { w += x; x = 0; } if (y < 0) { h += y; y = 0; }
-	if (x + w > W) w = W - x; if (y + h > H) h = H - y;
+	int x0 = CX0 > 0 ? CX0 : 0, y0 = CY0 > 0 ? CY0 : 0, x1 = CX1 < W ? CX1 : W, y1 = CY1 < H ? CY1 : H;
+	if (x < x0) { w -= x0 - x; x = x0; } if (y < y0) { h -= y0 - y; y = y0; }
+	if (x + w > x1) w = x1 - x; if (y + h > y1) h = y1 - y;
 	return w > 0 && h > 0;
 }
 void gfx_rect(int x, int y, int w, int h, u32 rgb)
 {
 	if (!clip(x, y, w, h)) return;
-	for (int j = 0; j < h; j++) { u32 *p = fb + (y + j) * W + x; for (int i = 0; i < w; i++) p[i] = rgb; }
+	u32 c = 0xFF000000u | rgb;
+	for (int j = 0; j < h; j++) { u32 *p = fb + (y + j) * W + x; for (int i = 0; i < w; i++) p[i] = c; }
 }
 void gfx_rect_a(int x, int y, int w, int h, u32 rgb, int a)
 {
@@ -61,6 +74,42 @@ void gfx_rrect(int x, int y, int w, int h, int r, u32 rgb, int a)
 			if (cx >= 0) { float dx = (i + 0.5f) - (cx + (i < r ? 0.f : 1.f)); float d = sqrtf(dx * dx + dy * dy) - r; ca = cov(d) * a / 255; }
 			px(x + i, y + j, rgb, ca); px(x + i, y + h - 1 - j, rgb, ca);
 		}
+	}
+}
+/* rounded rect with vertical gradient (colour and alpha) */
+void gfx_rrect_v(int x, int y, int w, int h, int r, u32 c0, int a0, u32 c1, int a1)
+{
+	if (r * 2 > h) r = h / 2; if (r * 2 > w) r = w / 2;
+	for (int j = 0; j < h; j++) {
+		float t = h > 1 ? (float)j / (h - 1) : 0.f;
+		int ar = ((c0 >> 16) & 255) + (int)((((int)(c1 >> 16) & 255) - (int)((c0 >> 16) & 255)) * t);
+		int ag = ((c0 >> 8) & 255) + (int)((((int)(c1 >> 8) & 255) - (int)((c0 >> 8) & 255)) * t);
+		int ab = (c0 & 255) + (int)((((int)c1 & 255) - (int)(c0 & 255)) * t);
+		u32 c = ((u32)ar << 16) | ((u32)ag << 8) | (u32)ab;
+		int a = a0 + (int)((a1 - a0) * t);
+		float dy = j < r ? r - j - 0.5f : (j >= h - r ? j - (h - r) + 0.5f : 0.f);
+		for (int i = 0; i < w; i++) {
+			int ca = a;
+			if (dy > 0.f) {
+				float dx = i < r ? r - i - 0.5f : (i >= w - r ? i - (w - r) + 0.5f : 0.f);
+				if (dx > 0.f) { float d = sqrtf(dx * dx + dy * dy) - r; ca = cov(d) * a / 255; }
+			}
+			if (ca) px(x + i, y + j, c, ca);
+		}
+	}
+}
+/* rounded rect outline */
+void gfx_rrect_stroke(int x, int y, int w, int h, int r, float th, u32 c, int a)
+{
+	if (r * 2 > h) r = h / 2; if (r * 2 > w) r = w / 2;
+	for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) {
+		float dx = i < r ? r - i - 0.5f : (i >= w - r ? i - (w - r) + 0.5f : 0.f);
+		float dy = j < r ? r - j - 0.5f : (j >= h - r ? j - (h - r) + 0.5f : 0.f);
+		float d;
+		if (dx > 0.f && dy > 0.f) d = r - sqrtf(dx * dx + dy * dy);
+		else { float ex = i + 0.5f < w - i - 0.5f ? i + 0.5f : w - i - 0.5f, ey = j + 0.5f < h - j - 0.5f ? j + 0.5f : h - j - 0.5f; d = ex < ey ? ex : ey; }
+		int cv = cov(fabsf(d - th / 2) - th / 2);
+		if (cv) px(x + i, y + j, c, cv * a / 255);
 	}
 }
 void gfx_circle(float cx, float cy, float r, u32 rgb, int a)
@@ -166,11 +215,12 @@ int gfx_text_fit(const FontDef *f, int x, int y, const char *utf8, int maxw, u32
 }
 
 /* ---------------- controller glyphs ---------------- */
+u32 GFX_BTN_BG = 0x1B2638, GFX_BTN_FG = 0xC9D4E5;
 int gfx_button(const char *k, int x, int cy, int sz)
 {
 	float r = sz / 2.f, cx = x + r, th = sz > 24 ? 2.6f : 2.f;
 	if (!k[1]) {
-		gfx_circle(cx, cy, r, 0x1B2638, 255);
+		gfx_circle(cx, cy, r, GFX_BTN_BG, 255);
 		float q = r * 0.42f;
 		switch (k[0]) {
 		case 'X': gfx_line(cx - q, cy - q, cx + q, cy + q, th, 0x8DB4FF, 255); gfx_line(cx - q, cy + q, cx + q, cy - q, th, 0x8DB4FF, 255); break;
@@ -181,9 +231,10 @@ int gfx_button(const char *k, int x, int cy, int sz)
 		return sz;
 	}
 	int tw = gfx_text_w(F_SMALL, k), w = tw + sz / 2 + 4;
-	gfx_rrect(x, cy - sz / 2, w, sz, sz / 2, 0x1B2638, 255);
-	gfx_text(F_SMALL, x + (w - tw) / 2, cy - F_SMALL->line / 2, k, 0xC9D4E5);
+	gfx_rrect(x, cy - sz / 2, w, sz, sz / 2, GFX_BTN_BG, 255);
+	gfx_text(F_SMALL, x + (w - tw) / 2, cy - F_SMALL->line / 2, k, GFX_BTN_FG);
 	return w;
 }
 
 void gfx_present(u32 *vram) { memcpy(vram, backbuf, (size_t)W * H * 4); }
+void gfx_target_size(int w, int h) { W = w; H = h; }   /* draw into a buffer of another size (set target first) */

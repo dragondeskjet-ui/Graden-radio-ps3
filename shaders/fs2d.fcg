@@ -1,0 +1,5 @@
+// textured, premultiplied colour
+void main(float2 uv : TEXCOORD0, float4 col : TEXCOORD1, uniform sampler2D tex, out float4 oColor : COLOR)
+{
+	oColor = tex2D(tex, uv) * col;
+}

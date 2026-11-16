@@ -1,0 +1,17 @@
+// Orthographic globe. Vertex = unit-sphere point (world X,Y,Z), uv = equirectangular coords.
+void main(float3 p : POSITION, float2 uv : TEXCOORD0,
+          uniform float4 east,    // e.x, e.y, 0, R
+          uniform float4 north,   // n.x, n.y, n.z, 0
+          uniform float4 view,    // c.x, c.y, c.z, 0
+          uniform float4 scr,     // centreX, centreY, 2/W, 2/H
+          out float4 oPos : POSITION, out float2 oUv : TEXCOORD0, out float3 oN : TEXCOORD1)
+{
+	float sx = p.x * east.x + p.y * east.y;
+	float sy = dot(p, north.xyz);
+	float d  = dot(p, view.xyz);
+	float x = scr.x + east.w * sx;
+	float y = scr.y - east.w * sy;
+	oPos = float4(x * scr.z - 1.0, 1.0 - y * scr.w, 0.5 - 0.45 * d, 1.0);
+	oUv = uv;
+	oN = float3(sx, sy, d);
+}

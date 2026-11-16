@@ -1,0 +1,11 @@
+void main(float2 uv : TEXCOORD0, float3 n : TEXCOORD1, uniform sampler2D tex, out float4 oColor : COLOR)
+{
+	float3 N = normalize(n);
+	float3 L = float3(-0.4776, 0.5838, 0.6567);
+	float k = 0.40 + 0.80 * max(dot(N, L), 0.0);
+	float rim = 1.0 - max(N.z, 0.0);
+	rim = rim * rim * rim * 0.6;
+	float3 c = tex2D(tex, uv).rgb * k;
+	c = lerp(c, float3(0.353, 0.659, 1.0), rim);
+	oColor = float4(c, 1.0);
+}

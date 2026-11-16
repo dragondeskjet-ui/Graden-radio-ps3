@@ -1,0 +1,18 @@
+// Station dots: each quad corner carries the place's unit vector; expanded in screen space.
+void main(float3 p : POSITION, float2 uv : TEXCOORD0, float3 cs : TEXCOORD1, float4 col : COLOR,
+          uniform float4 east, uniform float4 north, uniform float4 view, uniform float4 scr,
+          uniform float4 dot_scale,     // x: size multiplier
+          out float4 oPos : POSITION, out float2 oUv : TEXCOORD0, out float4 oCol : TEXCOORD1)
+{
+	float sx = p.x * east.x + p.y * east.y;
+	float sy = dot(p, north.xyz);
+	float d  = dot(p, view.xyz);
+	float s = cs.z * dot_scale.x;
+	float x = scr.x + east.w * sx + cs.x * s;
+	float y = scr.y - east.w * sy + cs.y * s;
+	float vis = d > 0.03 ? 1.0 : 0.0;
+	oPos = float4(x * scr.z - 1.0, 1.0 - y * scr.w, 0.0, 1.0);
+	oPos.x = vis > 0.5 ? oPos.x : -4.0;          // far side: push off-screen
+	oUv = uv;
+	oCol = col * vis;
+}

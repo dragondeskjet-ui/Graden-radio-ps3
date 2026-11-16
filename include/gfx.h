@@ -28,4 +28,10 @@ int  gfx_line_h(const FontDef *f);
 int  gfx_button(const char *kind, int x, int cy, int size);
 
 void gfx_present(u32 *vram);
+void gfx_clip(int x, int y, int w, int h);
+void gfx_noclip();
+void gfx_rrect_v(int x, int y, int w, int h, int r, u32 c0, int a0, u32 c1, int a1);
+void gfx_rrect_stroke(int x, int y, int w, int h, int r, float th, u32 c, int a);
+void gfx_target_size(int w, int h);
+extern u32 GFX_BTN_BG, GFX_BTN_FG;
 #endif

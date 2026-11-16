@@ -5,6 +5,7 @@
 #include <math.h>
 #include "ui.h"
 #include "gfx.h"
+#include "gpu.h"
 #include "player.h"
 #include "landmask.h"
 #include <time.h>
@@ -26,11 +27,13 @@ static Named named[] = {
 	{"Madrid","España",40.42f,-3.70f,120},{"Ciudad de México","México",19.43f,-99.13f,140},{"Buenos Aires","Argentina",-34.6f,-58.38f,160},
 	{"Bogotá","Colombia",4.71f,-74.07f,90},{"Lima","Perú",-12.05f,-77.04f,85},{"Lisboa","Portugal",38.72f,-9.14f,70},
 };
+u32 *gpu_host_frame();
 int main(int argc, char **argv)
 {
 	const int W = 1280, H = 720;
+	gpu_init(W, H);
+	if (!gpu_load_earth("../release/USRDIR/earth.565")) gpu_load_earth("release/USRDIR/earth.565");
 	ui_init(W, H);
-	if (!ui_load_earth("../release/USRDIR/earth.565")) ui_load_earth("release/USRDIR/earth.565");
 	int N = 7000; g_places = (Place *)calloc(N + 32, sizeof(Place));
 	for (unsigned i = 0; i < sizeof named / sizeof *named; i++) { Place &p = g_places[g_nplaces++]; p.lat = named[i].lat; p.lon = named[i].lon; snprintf(p.title, sizeof p.title, "%s", named[i].t); snprintf(p.country, sizeof p.country, "%s", named[i].c); p.size = named[i].n; snprintf(p.id, sizeof p.id, "N%u", i); }
 	while (g_nplaces < N) {
@@ -47,50 +50,40 @@ int main(int argc, char **argv)
 	for (int i = 0; i < g_nstations; i++) { snprintf(g_stations[i].id, 16, "S%d", i); snprintf(g_stations[i].name, 56, "%s", names[i][0]); snprintf(g_stations[i].sub, 40, "%s", names[i][1]); }
 	static Fav favs[] = { {"S0","Rádio Exemplo FM","Santarém, PA, Brasil"},{"F1","Radio Demo Madrid","Madrid, España"},{"F2","Estación Prueba 99","Bogotá, Colombia"},{"F3","Radio Muestra Sur","Buenos Aires, Argentina"} };
 	static auto isfav = [](const char *id) { return !strcmp(id, "S0") || !strcmp(id, "S8"); };
-
 	ui_set_places(g_places, g_nplaces);
+
 	UiModel m; memset(&m, 0, sizeof m);
 	m.places = g_places; m.nplaces = g_nplaces; m.hover = -1; m.stations = g_stations; m.nst = g_nstations;
-	m.favs = favs; m.nfav = 4; m.is_fav = isfav; m.tls = true; m.volume = 0.8f; m.frame = 37;
-	struct Scene { const char *file; } ;
+	m.favs = favs; m.nfav = 4; m.is_fav = isfav; m.tls = true; m.volume = 0.8f; m.frame = 37; m.fps = 60;
+	m.ar = 0xFF; m.ag = 0xC2; m.ab = 0x4B;
 	auto save = [&](const char *fn) {
-		u32 *b = gfx_buffer(); FILE *f = fopen(fn, "wb"); fprintf(f, "P6 %d %d 255\n", W, H);
+		u32 *b = gpu_host_frame(); FILE *f = fopen(fn, "wb"); fprintf(f, "P6 %d %d 255\n", W, H);
 		for (int i = 0; i < W * H; i++) { unsigned char c[3] = { (unsigned char)(b[i] >> 16), (unsigned char)(b[i] >> 8), (unsigned char)b[i] }; fwrite(c, 1, 3, f); }
 		fclose(f);
 	};
-	// 1: world map, playing
-	m.view = UV_MAP; m.lon = -62; m.lat = 8; m.zoom = 1.0f; m.map_dirty = true;
+	auto shot = [&](const char *fn) { m.ui_dirty = true; ui_frame(&m); save(fn); };
+	// 1: dark glass, world, playing
+	m.theme = 0; m.view = UV_MAP; m.lon = -62; m.lat = 8; m.zoom = 1.0f;
 	m.pstate = P_PLAYING; m.pfmt = "AAC"; m.now_name = "Radio Demo Madrid"; m.now_place = "Madrid, España"; m.now_id = "F1";
-	m.ui_dirty = true; ui_render(&m); save("shot1.ppm");
-	// 2: zoomed Amazon, hover Santarém, idle
-	m.lon = -54.71f; m.lat = -2.44f; m.zoom = 9; m.map_dirty = true; m.hover = 0; m.pstate = P_IDLE;
-	m.ui_dirty = true; ui_render(&m); save("shot2.ppm");
-	// 3: stations panel, playing
-	m.view = UV_STATIONS; m.panel_place = &g_places[0]; m.st_sel = 2; m.st_top = 0; m.map_dirty = true; m.lon = -54.71f; m.lat = -2.44f; m.zoom = 4;
+	shot("shot1.ppm");
+	// 2: light glass, hover Santarém
+	m.theme = 1; m.lon = -54.71f; m.lat = -2.44f; m.zoom = 9; m.hover = 0; m.pstate = P_IDLE; m.ar = 0x0A; m.ag = 0x84; m.ab = 0xFF;
+	shot("shot2.ppm");
+	// 3: aero, stations
+	m.theme = 2; m.view = UV_STATIONS; m.panel_place = &g_places[0]; m.st_sel = 2; m.st_top = 0; m.lon = -54.71f; m.lat = -2.44f; m.zoom = 4; m.ar = 0x1F; m.ag = 0xB2; m.ab = 0x5A;
 	m.pstate = P_PLAYING; m.pfmt = "MP3"; m.now_name = "Rádio Exemplo FM"; m.now_place = "Santarém, PA, Brasil"; m.now_id = "S0";
 	m.toast = "Añadido a favoritos"; m.toast_t = 40;
-	m.ui_dirty = true; ui_render(&m); save("shot3.ppm");
-	// 4: favorites, buffering
-	m.view = UV_FAVS; m.fav_sel = 1; m.toast_t = 0; m.pstate = P_BUFFERING; m.pmsg = "Cargando buffer..."; m.now_name = "Radio Demo Madrid"; m.now_place = "Madrid, España"; m.now_id = "F1";
-	m.lon = -10; m.lat = 25; m.zoom = 1.6f; m.map_dirty = true;
-	m.ui_dirty = true; ui_render(&m); save("shot4.ppm");
-	// 5: map loading
-	m.view = UV_MAP; m.nplaces = 0; m.loading = 1; m.hover = -1; m.pstate = P_IDLE; m.lon = 20; m.lat = 15; m.zoom = 1; m.map_dirty = true;
-	m.ui_dirty = true; ui_render(&m); save("shot5.ppm");
-	// 6: country search with keyboard
+	shot("shot3.ppm");
+	// 4: custom RGB, menu
+	m.theme = 3; m.view = UV_MENU; m.menu_sel = 3; m.toast_t = 0; m.ar = 0x8E; m.ag = 0x3B; m.ab = 0xD8; m.lon = -10; m.lat = 25; m.zoom = 1.6f;
+	m.pstate = P_BUFFERING; m.pmsg = "Cargando buffer..."; m.now_name = "Radio Demo Madrid"; m.now_place = "Madrid, España"; m.now_id = "F1";
+	shot("shot4.ppm");
+	// 5: dark glass, country search with keyboard
 	static Country cs[] = { {"Argentina",120,900,0},{"Armenia",4,20,0},{"Aruba",1,6,0},{"Australia",210,1400,0},{"Austria",60,300,0},{"Azerbaijan",5,30,0} };
 	static const Country *cl[6] = { &cs[0],&cs[1],&cs[2],&cs[3],&cs[4],&cs[5] };
-	m.nplaces = g_nplaces; m.loading = 0; m.view = UV_COUNTRIES; m.clist = cl; m.nclist = 6; m.c_sel = 0; m.query = "AR"; m.kb_open = true; m.kb_sel = 17;
-	m.pstate = P_PLAYING; m.pfmt = "AAC"; m.now_name = "Radio Demo Madrid"; m.now_place = "Madrid, España"; m.now_id = "F1";
-	m.lon = -60; m.lat = -25; m.zoom = 1.3f; m.map_dirty = true; m.ui_dirty = true; ui_render(&m); save("shot5.ppm");
-	// benchmark (host, single thread): moving globe frames
-	m.kb_open = false; m.view = UV_MAP; m.ui_dirty = true;
-	clock_t t0 = clock(); int NB = 120;
-	for (int i = 0; i < NB; i++) { m.lon += 0.5f; m.map_dirty = true; if (i % 10 == 0) m.lat += 0.3f; m.frame++; ui_render(&m); }
-	double ms = (clock() - t0) * 1000.0 / CLOCKS_PER_SEC / NB;
-	fprintf(stderr, "host avg frame (pan, incl. lat change every 10): %.2f ms\n", ms);
-	t0 = clock();
-	for (int i = 0; i < NB; i++) { m.zoom *= 1.01f; m.map_dirty = true; ui_render(&m); }
-	fprintf(stderr, "host avg frame (zoom, LUT rebuild each frame): %.2f ms\n", (clock() - t0) * 1000.0 / CLOCKS_PER_SEC / NB);
+	m.theme = 0; m.ar = 0xFF; m.ag = 0xC2; m.ab = 0x4B;
+	m.view = UV_COUNTRIES; m.clist = cl; m.nclist = 6; m.c_sel = 0; m.query = "AR"; m.kb_open = true; m.kb_sel = 17;
+	m.pstate = P_PLAYING; m.pfmt = "AAC"; m.lon = -60; m.lat = -25; m.zoom = 1.3f;
+	shot("shot5.ppm");
 	return 0;
 }

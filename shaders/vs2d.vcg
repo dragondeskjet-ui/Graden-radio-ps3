@@ -1,0 +1,9 @@
+// 2D quads in pixel coordinates
+void main(float2 pos : POSITION, float2 uv : TEXCOORD0, float4 col : COLOR,
+          uniform float4 scr,                 // 2/W, 2/H
+          out float4 oPos : POSITION, out float2 oUv : TEXCOORD0, out float4 oCol : TEXCOORD1)
+{
+	oPos = float4(pos.x * scr.x - 1.0, 1.0 - pos.y * scr.y, 0.0, 1.0);
+	oUv = uv;
+	oCol = col;
+}
