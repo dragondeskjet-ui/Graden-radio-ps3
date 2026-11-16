@@ -159,16 +159,19 @@ static void apply_filter()
 static void conf_save(const UiModel &m)
 {
 	FILE *f = fopen(CONF_FILE, "w"); if (!f) return;
-	fprintf(f, "%f %f %f %f %d %d %d %d %d\n", m.lon, m.lat, m.zoom, player_get_volume(), (int)g_tls_verify, m.theme, m.ar, m.ag, m.ab);
+	fprintf(f, "v2 %d %d %d %d %d %d %d %d %d\n", (int)(m.lon * 1000), (int)(m.lat * 1000), (int)(m.zoom * 1000), (int)(player_get_volume() * 1000), (int)g_tls_verify, m.theme, m.ar, m.ag, m.ab);
 	fclose(f);
 }
 static void conf_load(UiModel &m)
 {
 	FILE *f = fopen(CONF_FILE, "r"); if (!f) return;
-	float lo, la, z, v; int t, th = 0, r = 255, g = 194, b = 75;
-	int n = fscanf(f, "%f %f %f %f %d %d %d %d %d", &lo, &la, &z, &v, &t, &th, &r, &g, &b);
-	if (n >= 5) { m.lon = lo; m.lat = la; m.zoom = z < 1 ? 1 : (z > 40 ? 40 : z); player_set_volume(v); g_tls_verify = t; }
-	if (n >= 9) { m.theme = th % UI_NTHEMES; m.ar = r & 255; m.ag = g & 255; m.ab = b & 255; }
+	int lo, la, z, v, t, th, r, g, b;   /* integers only: no float scanf/printf (not thread-safe in newlib) */
+	if (fscanf(f, "v2 %d %d %d %d %d %d %d %d %d", &lo, &la, &z, &v, &t, &th, &r, &g, &b) == 9) {
+		m.lon = lo / 1000.f; m.lat = la / 1000.f; m.zoom = z < 1000 ? 1.f : (z > 40000 ? 40.f : z / 1000.f);
+		if (m.lat > 85) m.lat = 85; if (m.lat < -85) m.lat = -85;
+		player_set_volume(v / 1000.f); g_tls_verify = t;
+		m.theme = ((th % UI_NTHEMES) + UI_NTHEMES) % UI_NTHEMES; m.ar = r & 255; m.ag = g & 255; m.ab = b & 255;
+	}
 	fclose(f);
 }
 

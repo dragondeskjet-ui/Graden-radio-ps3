@@ -71,6 +71,24 @@ static char *pstr(P *p)
 	return out;
 }
 
+/* Own number parser: newlib's atof/strtod share unlocked state with printf("%f") on other threads. */
+static double parse_num(const char *s)
+{
+	double sign = 1, v = 0; int e = 0;
+	if (*s == '-') { sign = -1; s++; } else if (*s == '+') s++;
+	while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
+	if (*s == '.') { s++; while (*s >= '0' && *s <= '9') { v = v * 10 + (*s++ - '0'); e--; } }
+	if (*s == 'e' || *s == 'E') {
+		s++; int es = 1, ev = 0;
+		if (*s == '-') { es = -1; s++; } else if (*s == '+') s++;
+		while (*s >= '0' && *s <= '9' && ev < 1000) ev = ev * 10 + (*s++ - '0');
+		e += es * ev;
+	}
+	if (e > 300) e = 300; if (e < -300) e = -300;
+	double p10 = 1; for (int i = e < 0 ? -e : e; i > 0; i--) p10 *= 10;
+	return sign * (e < 0 ? v / p10 : v * p10);
+}
+
 static JNode *pval(P *p);
 
 static JNode *newnode(P *p, JType t)
@@ -121,7 +139,7 @@ static JNode *pval(P *p)
 		char buf[40]; int i = 0;
 		while (p->s < p->e && i < 39 && (strchr("+-.eE", *p->s) || (*p->s >= '0' && *p->s <= '9'))) buf[i++] = *p->s++;
 		buf[i] = 0;
-		n = newnode(p, J_NUM); if (n) n->num = atof(buf);
+		n = newnode(p, J_NUM); if (n) n->num = parse_num(buf);
 		return n;
 	}
 	p->err = true; return NULL;

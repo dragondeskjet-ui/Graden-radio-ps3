@@ -28,7 +28,7 @@ void rg_log(const char *fmt, ...)
 	FILE *f = fopen(LOG_FILE, "a"); if (!f) { if (mtx_ok) sysMutexUnlock(mtx); return; }
 	static u64 t0 = 0; u64 s, ns; sysGetCurrentTime(&s, &ns); u64 ms = s * 1000 + ns / 1000000; if (!t0) t0 = ms;
 	MemInfo mi = { 0, 0 }; mem_info(&mi);
-	fprintf(f, "[%6.2fs free %5.1fMB] ", (ms - t0) / 1000.0, mi.avail / 1048576.0);
+	fprintf(f, "[%5u.%02us free %3uMB] ", (unsigned)((ms - t0) / 1000), (unsigned)((ms - t0) % 1000 / 10), (unsigned)(mi.avail >> 20));
 	va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
 	fputc('\n', f); fclose(f);
 	if (mtx_ok) sysMutexUnlock(mtx);

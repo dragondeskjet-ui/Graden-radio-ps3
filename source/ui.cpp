@@ -499,7 +499,8 @@ static void build_layer(const UiModel *m)
 static char hud_last[128]; static int hud_w;
 static void build_hud(const UiModel *m)
 {
-	char t[128]; snprintf(t, sizeof t, "%.2f\xC2\xB0 %c   %.2f\xC2\xB0 %c   x%.1f   %d fps%s", fabsf(m->lat), m->lat >= 0 ? 'N' : 'S', fabsf(m->lon), m->lon >= 0 ? 'E' : 'O', m->zoom, (int)(m->fps + 0.5f), m->tls ? "" : "   TLS OFF");
+	int la = (int)(fabsf(m->lat) * 100 + 0.5f), lo = (int)(fabsf(m->lon) * 100 + 0.5f), zm = (int)(m->zoom * 10 + 0.5f);
+	char t[128]; snprintf(t, sizeof t, "%d.%02d\xC2\xB0 %c   %d.%02d\xC2\xB0 %c   x%d.%d   %d fps%s", la / 100, la % 100, m->lat >= 0 ? 'N' : 'S', lo / 100, lo % 100, m->lon >= 0 ? 'E' : 'O', zm / 10, zm % 10, (int)(m->fps + 0.5f), m->tls ? "" : "   TLS OFF");
 	if (!strcmp(t, hud_last) && !m->ui_dirty) return;
 	strcpy(hud_last, t);
 	memset(hudbuf, 0, (size_t)HUD_W * HUD_H * 4);
