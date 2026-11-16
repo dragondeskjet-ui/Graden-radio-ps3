@@ -5,7 +5,7 @@
 #include <rsx/rsx.h>
 
 #define CB_SIZE		0x100000
-#define HOST_SIZE	(32*1024*1024)
+#define HOST_SIZE	(8*1024*1024)
 
 extern gcmContextData *context;
 extern u32 display_width;

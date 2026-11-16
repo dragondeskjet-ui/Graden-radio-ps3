@@ -81,5 +81,5 @@ endif
 
 # Host-side screenshots (real UI code + sample data): make shots
 shots:
-	g++ -O2 -std=c++17 -Ihost -Iinclude -Isource host/shot.cpp host/gpu_cpu.cpp source/ui.cpp source/gfx.cpp -o host/shot
+	g++ -O2 -std=c++17 -DHOST_BUILD -Ihost -Iinclude -Isource host/shot.cpp host/gpu_cpu.cpp source/ui.cpp source/gfx.cpp -o host/shot
 	cd docs && ../host/shot && for i in 1 2 3 4 5; do python3 -c "from PIL import Image; Image.open('shot$$i.ppm').save('shot$$i.png')"; rm -f shot$$i.ppm; done

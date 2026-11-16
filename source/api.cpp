@@ -4,6 +4,7 @@
 #include "api.h"
 #include "http.h"
 #include "json.h"
+#include "log.h"
 
 #define BASE "https://radio.garden/api/ara/content"
 
@@ -15,9 +16,12 @@ static void cpy(char *d, size_t n, JNode *s) { d[0] = 0; if (s && s->type == J_S
 bool api_load_places(char *err, size_t errlen)
 {
 	Buf b;
-	if (!http_get(BASE "/places", &b, 32u << 20, err, errlen)) return false;
+	rg_log("places: download start");
+	if (!http_get(BASE "/places", &b, 32u << 20, err, errlen)) { rg_log("places: download failed: %s", err); return false; }
+	rg_log("places: downloaded %u bytes", (unsigned)b.n);
 	JDoc *d = json_parse(b.d, b.n);
 	buf_free(&b);
+	rg_log("places: json %s", d ? "ok" : "FAILED");
 	if (!d) { snprintf(err, errlen, "JSON invalido (places)"); return false; }
 	JNode *list = json_get(json_get(d->root, "data"), "list");
 	if (!list || list->type != J_ARR) { json_free(d); snprintf(err, errlen, "Respuesta inesperada (places)"); return false; }
@@ -40,6 +44,7 @@ bool api_load_places(char *err, size_t errlen)
 		if (p.id[0]) k++;
 	}
 	json_free(d);
+	rg_log("places: built %d of %d", k, cnt);
 	free(g_places); g_places = arr; g_nplaces = k;
 	if (k == 0) { snprintf(err, errlen, "Lista de lugares vacia"); return false; }
 	return true;

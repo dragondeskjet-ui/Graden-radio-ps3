@@ -242,9 +242,11 @@ int main(int, const char **)
 	if (!gpu_load_earth(DATA_DIR "earth.565")) toast("No se encontró earth.565 (globo sin textura)");
 
 	bool net_ok = http_init();
+	rg_log("http_init %s", net_ok ? "ok" : "FAILED");
 	bool audio_ok = player_init();
+	rg_log("player_init %s", audio_ok ? "ok" : "FAILED");
 	favs_load();
-	if (net_ok) { job_start(J_PLACES, NULL); M.loading = 1; }
+	if (net_ok) { job_start(J_PLACES, NULL); M.loading = 1; rg_log("job places started"); }
 	else M.error = "Red no disponible. Revisa la conexión de la PS3.";
 	if (!audio_ok) toast("No se pudo abrir la salida de audio");
 
@@ -432,6 +434,7 @@ int main(int, const char **)
 
 		/* the GPU renders every vblank (60 Hz); flip() waits for vsync */
 		M.frame++;
+		if (M.loading == 1 && (M.frame % 60) == 0) rg_log("main alive frame %u (loading)", M.frame);
 		static int logframes = 0;
 		bool lg = M.nplaces > 0 && logframes < 3;
 		if (lg) rg_log("frame %d with places: building", logframes);

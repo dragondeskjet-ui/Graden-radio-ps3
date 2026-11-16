@@ -10,7 +10,7 @@ const FontDef *F_SMALL, *F_BODY, *F_BOLD, *F_TITLE;
 
 void gfx_init(u32 w, u32 h)
 {
-	W = w; H = h; backbuf = fb = (u32 *)malloc((size_t)w * h * 4);
+	W = w; H = h; backbuf = fb = NULL;   /* every draw goes to an explicit target */
 	if (h >= 900) { F_SMALL = &f_s22; F_BODY = &f_r30; F_BOLD = &f_b30; F_TITLE = &f_b42; }
 	else          { F_SMALL = &f_s15; F_BODY = &f_r20; F_BOLD = &f_b20; F_TITLE = &f_b28; }
 }

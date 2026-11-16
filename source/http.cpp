@@ -4,6 +4,7 @@
 #include <net/net.h>
 #include <sysmodule/sysmodule.h>
 #include "http.h"
+#include "log.h"
 
 #define CA_FILE "/dev_hdd0/game/RGDN00001/USRDIR/cacert.pem"
 #define UA "Mozilla/5.0 (PLAYSTATION 3) RadioGardenPS3/1.0"
@@ -64,7 +65,9 @@ bool http_get(const char *url, Buf *out, size_t max_bytes, char *err, size_t err
 	curl_easy_setopt(c, CURLOPT_WRITEDATA, &ctx);
 	char cerr[CURL_ERROR_SIZE] = {0};
 	curl_easy_setopt(c, CURLOPT_ERRORBUFFER, cerr);
+	rg_log("http_get: perform %s", url);
 	CURLcode rc = curl_easy_perform(c);
+	rg_log("http_get: done rc=%d bytes=%u", (int)rc, (unsigned)out->n);
 	long code = 0;
 	curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
 	curl_easy_cleanup(c);

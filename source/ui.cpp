@@ -126,6 +126,9 @@ static void make_stars()
 		stars[y * W + x] = 0xFF000000u | c;
 	}
 	gpu_upload(TEX_STARS, stars, W, H);
+#ifndef HOST_BUILD
+	free(stars); stars = NULL;
+#endif
 }
 
 void ui_set_places(const Place *p, int n)
