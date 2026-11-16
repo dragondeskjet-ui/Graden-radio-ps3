@@ -256,6 +256,7 @@ void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *dots
 	/* 1. background: stars + atmosphere glow */
 	draw_sprites(bg, nbg);
 
+	RG_STAGE(20);
 	/* 2. globe */
 	const float d = 3.14159265f / 180.f;
 	float sl = sinf(g.lon * d), cl = cosf(g.lon * d), sp = sinf(g.lat * d), cp = cosf(g.lat * d);
@@ -282,6 +283,7 @@ void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *dots
 		blend_premul(true);
 
 	}
+	RG_STAGE(21);
 	/* 3. station dots */
 	draw_sprites(dots, ndots);
 	{
@@ -289,6 +291,7 @@ void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *dots
 		if (!logged && ndots > 0) { logged = true; rg_log("gpu_frame: first dots submitted (%d sprites)", ndots); }
 	}
 
+	RG_STAGE(22);
 	/* 4. UI layer + dynamic sprites */
 	draw_sprites(s, ns);
 }

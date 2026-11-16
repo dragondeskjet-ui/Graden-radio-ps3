@@ -4,7 +4,10 @@
 #include <sys/systime.h>
 #include <sys/mutex.h>
 #include <string.h>
+#include <sys/thread.h>
+#include <unistd.h>
 #include "log.h"
+volatile int rg_stage = 0; volatile unsigned rg_wd_frame = 0;
 #define LOG_FILE "/dev_hdd0/game/RGDN00001/USRDIR/debug.log"
 
 /* lv2 syscall 352: sys_memory_get_user_memory_size */
@@ -32,4 +35,20 @@ void rg_log(const char *fmt, ...)
 	va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
 	fputc('\n', f); fclose(f);
 	if (mtx_ok) sysMutexUnlock(mtx);
+}
+
+static void wd_entry(void *)
+{
+	unsigned last = 0xFFFFFFFFu; int same = 0;
+	for (;;) {
+		sleep(1);
+		unsigned f = rg_wd_frame;
+		if (f == last) { if (++same <= 6 || same % 10 == 0) rg_log("WATCHDOG: main stuck %ds at stage %d (frame %u)", same, rg_stage, f); }
+		else { if (same) rg_log("WATCHDOG: main resumed at stage %d", rg_stage); same = 0; }
+		last = f;
+	}
+}
+void rg_watchdog_start()
+{
+	sys_ppu_thread_t t; sysThreadCreate(&t, wd_entry, NULL, 900, 0x4000, 0, (char *)"rg_wd");
 }

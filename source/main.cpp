@@ -229,7 +229,7 @@ int main(int, const char **)
 	atexit(program_exit_callback);
 	sysUtilRegisterCallback(0, sysutil_exit_callback, NULL);
 	setRenderTarget(curr_fb);
-	rg_log_reset();
+	rg_log_reset(); rg_watchdog_start();
 	rg_log("start %ux%u", display_width, display_height);
 	gpu_init(display_width, display_height);
 	ui_init(display_width, display_height);
@@ -285,6 +285,7 @@ int main(int, const char **)
 		} else rep = 0;
 		bool uidirty = pr != 0 || stepup || stepdn || stepl || stepr;
 
+		RG_STAGE(2);
 		/* background jobs */
 		if (M.loading && job_state != 1) {
 			if (job_kind == J_PLACES) {
@@ -421,6 +422,7 @@ int main(int, const char **)
 		if (moved) { save_timer = 120; still = 0; }
 		else still++;
 
+		RG_STAGE(3);
 		/* hover only matters on the map; panel follows it */
 		int hv = M.view == UV_MAP ? ui_pick(&M) : -1;
 		if (hv != last_hover) { last_hover = hv; M.hover = hv; uidirty = true; }
@@ -441,11 +443,14 @@ int main(int, const char **)
 		static int logframes = 0;
 		bool lg = M.nplaces > 0 && logframes < 3;
 		if (lg) rg_log("frame %d with places: building", logframes);
+		RG_STAGE(4); rg_wd_frame = M.frame;
 		ui_frame(&M);
+		RG_STAGE(5);
 		if (lg) rg_log("frame %d: submitted, flipping", logframes);
 		flip();
 		if (lg) { rg_log("frame %d: flip ok", logframes); logframes++; }
 
+		RG_STAGE(1);
 		fps_frames++;
 		u64 t = now_us();
 		if (t - fps_t0 >= 500000) { M.fps = fps_frames * 1e6f / (float)(t - fps_t0); fps_frames = 0; fps_t0 = t; }

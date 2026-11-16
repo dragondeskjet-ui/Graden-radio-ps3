@@ -1,4 +1,5 @@
 // Host-side screenshot renderer: runs the real UI code with sample data (no network, no PS3).
+volatile int rg_stage; volatile unsigned rg_wd_frame;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

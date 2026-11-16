@@ -5,6 +5,7 @@
 #include <string.h>
 #include <math.h>
 #include "ui.h"
+#include "log.h"
 #include "gfx.h"
 #include "gpu.h"
 #include "player.h"
@@ -556,9 +557,9 @@ void ui_init(unsigned w, unsigned h)
 
 void ui_frame(UiModel *m)
 {
-	if (m->ui_dirty) build_layer(m);
-	build_hud(m);
-	build_toast(m);
+	RG_STAGE(10); if (m->ui_dirty) build_layer(m);
+	RG_STAGE(11); build_hud(m);
+	RG_STAGE(12); build_toast(m);
 	m->ui_dirty = false;
 
 	float R = globe_R(m);
@@ -603,6 +604,7 @@ void ui_frame(UiModel *m)
 		spr(VCX - TOAST_W / 2.f, 3 * U + HUD_H + U, TOAST_W, TOAST_H, NULL, 0xFFFFFF, a, 0, TEX_TOAST);
 	}
 
+	RG_STAGE(13);
 	/* station dots: projected on the PPU (cheap with precomputed unit vectors), drawn as GPU sprites */
 	int nd = 0;
 	if (g_pl && dotspr && m->nplaces) {
@@ -626,5 +628,7 @@ void ui_frame(UiModel *m)
 		}
 	}
 	GlobeView g; g.lon = m->lon; g.lat = m->lat; g.R = R; g.cx = VCX; g.cy = VCY; g.show_globe = true; g.dot_scale = 1;
+	RG_STAGE(14);
 	gpu_frame(g, bg, nbg, dotspr, nd, fg, nfg);
+	RG_STAGE(15);
 }
