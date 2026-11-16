@@ -11,6 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # NASA Blue Marble (public domain) -> release/USRDIR/earth.565 (16 MB, not stored in git)
+      - name: Generate Earth texture
+        run: |
+          pip install --quiet basemap-data pillow numpy
+          python3 tools/gen_earth.py
+
       # Image hldtux/ps3dev (amd64) (toolchain + PSL1GHT).
       - name: Build inside ps3dev container
         run: |

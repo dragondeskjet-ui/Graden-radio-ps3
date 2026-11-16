@@ -7,6 +7,8 @@
 #include "gfx.h"
 #include "player.h"
 #include "landmask.h"
+#include <time.h>
+#include <algorithm>
 
 Place *g_places; int g_nplaces; Station g_stations[MAX_STATIONS]; int g_nstations;
 
@@ -46,6 +48,7 @@ int main(int argc, char **argv)
 	static Fav favs[] = { {"S0","Rádio Exemplo FM","Santarém, PA, Brasil"},{"F1","Radio Demo Madrid","Madrid, España"},{"F2","Estación Prueba 99","Bogotá, Colombia"},{"F3","Radio Muestra Sur","Buenos Aires, Argentina"} };
 	static auto isfav = [](const char *id) { return !strcmp(id, "S0") || !strcmp(id, "S8"); };
 
+	ui_set_places(g_places, g_nplaces);
 	UiModel m; memset(&m, 0, sizeof m);
 	m.places = g_places; m.nplaces = g_nplaces; m.hover = -1; m.stations = g_stations; m.nst = g_nstations;
 	m.favs = favs; m.nfav = 4; m.is_fav = isfav; m.tls = true; m.volume = 0.8f; m.frame = 37;
@@ -58,21 +61,36 @@ int main(int argc, char **argv)
 	// 1: world map, playing
 	m.view = UV_MAP; m.lon = -62; m.lat = 8; m.zoom = 1.0f; m.map_dirty = true;
 	m.pstate = P_PLAYING; m.pfmt = "AAC"; m.now_name = "Radio Demo Madrid"; m.now_place = "Madrid, España"; m.now_id = "F1";
-	ui_render(&m); save("shot1.ppm");
+	m.ui_dirty = true; ui_render(&m); save("shot1.ppm");
 	// 2: zoomed Amazon, hover Santarém, idle
 	m.lon = -54.71f; m.lat = -2.44f; m.zoom = 9; m.map_dirty = true; m.hover = 0; m.pstate = P_IDLE;
-	ui_render(&m); save("shot2.ppm");
+	m.ui_dirty = true; ui_render(&m); save("shot2.ppm");
 	// 3: stations panel, playing
 	m.view = UV_STATIONS; m.panel_place = &g_places[0]; m.st_sel = 2; m.st_top = 0; m.map_dirty = true; m.lon = -54.71f; m.lat = -2.44f; m.zoom = 4;
 	m.pstate = P_PLAYING; m.pfmt = "MP3"; m.now_name = "Rádio Exemplo FM"; m.now_place = "Santarém, PA, Brasil"; m.now_id = "S0";
 	m.toast = "Añadido a favoritos"; m.toast_t = 40;
-	ui_render(&m); save("shot3.ppm");
+	m.ui_dirty = true; ui_render(&m); save("shot3.ppm");
 	// 4: favorites, buffering
 	m.view = UV_FAVS; m.fav_sel = 1; m.toast_t = 0; m.pstate = P_BUFFERING; m.pmsg = "Cargando buffer..."; m.now_name = "Radio Demo Madrid"; m.now_place = "Madrid, España"; m.now_id = "F1";
 	m.lon = -10; m.lat = 25; m.zoom = 1.6f; m.map_dirty = true;
-	ui_render(&m); save("shot4.ppm");
+	m.ui_dirty = true; ui_render(&m); save("shot4.ppm");
 	// 5: map loading
 	m.view = UV_MAP; m.nplaces = 0; m.loading = 1; m.hover = -1; m.pstate = P_IDLE; m.lon = 20; m.lat = 15; m.zoom = 1; m.map_dirty = true;
-	ui_render(&m); save("shot5.ppm");
+	m.ui_dirty = true; ui_render(&m); save("shot5.ppm");
+	// 6: country search with keyboard
+	static Country cs[] = { {"Argentina",120,900,0},{"Armenia",4,20,0},{"Aruba",1,6,0},{"Australia",210,1400,0},{"Austria",60,300,0},{"Azerbaijan",5,30,0} };
+	static const Country *cl[6] = { &cs[0],&cs[1],&cs[2],&cs[3],&cs[4],&cs[5] };
+	m.nplaces = g_nplaces; m.loading = 0; m.view = UV_COUNTRIES; m.clist = cl; m.nclist = 6; m.c_sel = 0; m.query = "AR"; m.kb_open = true; m.kb_sel = 17;
+	m.pstate = P_PLAYING; m.pfmt = "AAC"; m.now_name = "Radio Demo Madrid"; m.now_place = "Madrid, España"; m.now_id = "F1";
+	m.lon = -60; m.lat = -25; m.zoom = 1.3f; m.map_dirty = true; m.ui_dirty = true; ui_render(&m); save("shot5.ppm");
+	// benchmark (host, single thread): moving globe frames
+	m.kb_open = false; m.view = UV_MAP; m.ui_dirty = true;
+	clock_t t0 = clock(); int NB = 120;
+	for (int i = 0; i < NB; i++) { m.lon += 0.5f; m.map_dirty = true; if (i % 10 == 0) m.lat += 0.3f; m.frame++; ui_render(&m); }
+	double ms = (clock() - t0) * 1000.0 / CLOCKS_PER_SEC / NB;
+	fprintf(stderr, "host avg frame (pan, incl. lat change every 10): %.2f ms\n", ms);
+	t0 = clock();
+	for (int i = 0; i < NB; i++) { m.zoom *= 1.01f; m.map_dirty = true; ui_render(&m); }
+	fprintf(stderr, "host avg frame (zoom, LUT rebuild each frame): %.2f ms\n", (clock() - t0) * 1000.0 / CLOCKS_PER_SEC / NB);
 	return 0;
 }

@@ -5,3 +5,4 @@ build/
 *.map
 host/shot
 *.ppm
+release/USRDIR/earth.565

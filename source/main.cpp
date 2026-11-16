@@ -1,12 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <ctype.h>
 #include <math.h>
 #include <unistd.h>
 #include <malloc.h>
 #include <ppu-types.h>
 #include <sys/process.h>
 #include <sys/thread.h>
+#include <sys/sem.h>
+#include <sys/systime.h>
 #include <io/pad.h>
 #include <rsx/rsx.h>
 #include <sysutil/sysutil.h>
@@ -31,9 +35,41 @@ static void program_exit_callback() { sysUtilUnregisterCallback(SYSUTIL_EVENT_SL
 static void sysutil_exit_callback(u64 status, u64, void *) { if (status == SYSUTIL_EXIT_GAME) running = 0; }
 }
 
+/* ---------- second hardware thread for rendering ---------- */
+static sys_sem_t sem_go, sem_done;
+static UiJob w_job; static void *w_arg; static volatile int w_quit = 0; static int w_ok = 0;
+static void worker(void *)
+{
+	while (!w_quit) {
+		sysSemWait(sem_go, 0);
+		if (w_quit) break;
+		w_job(1, w_arg);
+		sysSemPost(sem_done, 1);
+	}
+	sysThreadExit(0);
+}
+static void par_run(UiJob job, void *arg)
+{
+	if (!w_ok) { job(0, arg); job(1, arg); return; }
+	w_job = job; w_arg = arg;
+	sysSemPost(sem_go, 1);
+	job(0, arg);
+	sysSemWait(sem_done, 0);
+}
+static void worker_start()
+{
+	sys_sem_attr_t a; memset(&a, 0, sizeof a);
+	a.attr_protocol = SYS_SEM_ATTR_PROTOCOL; a.attr_pshared = SYS_SEM_ATTR_PSHARED;
+	sys_ppu_thread_t th;
+	if (sysSemCreate(&sem_go, &a, 0, 1) == 0 && sysSemCreate(&sem_done, &a, 0, 1) == 0 &&
+	    sysThreadCreate(&th, worker, NULL, 1000, 0x10000, 0, (char *)"rg_render") == 0) { w_ok = 1; ui_set_parallel(par_run); }
+}
+
+static u64 now_us() { u64 s, ns; sysGetCurrentTime(&s, &ns); return s * 1000000ull + ns / 1000; }
+
 /* ---------- background job ---------- */
 enum { J_NONE, J_PLACES, J_STATIONS };
-static volatile int job_kind = J_NONE, job_state = 0;  /* 1 running, 2 ok, 3 failed */
+static volatile int job_kind = J_NONE, job_state = 0;
 static char job_err[128], job_arg[16];
 static sys_ppu_thread_t job_th; static int job_started = 0;
 static void job_entry(void *)
@@ -82,7 +118,73 @@ static bool fav_toggle(const char *id, const char *name, const char *place)
 	favs_save(); return true;
 }
 
-/* ---------- config (last view, volume) ---------- */
+/* ---------- countries ---------- */
+static Country *countries = NULL; static int ncountries = 0;
+static int *country_places = NULL;
+static const Country **cfilter = NULL; static int ncfilter = 0;
+static char query[32] = "";
+
+static int cmp_country(const void *a, const void *b) { return strcasecmp(((const Country *)a)->name, ((const Country *)b)->name); }
+static const Place *sort_base;
+static int cmp_place_size(const void *a, const void *b) { return (int)sort_base[*(const int *)b].size - (int)sort_base[*(const int *)a].size; }
+
+static void build_countries()
+{
+	free(countries); free(country_places); free(cfilter);
+	countries = (Country *)calloc(g_nplaces + 1, sizeof(Country)); ncountries = 0;
+	int *cidx = (int *)malloc(sizeof(int) * (g_nplaces + 1));
+	for (int i = 0; i < g_nplaces; i++) {
+		int c = -1;
+		for (int k = ncountries - 1; k >= 0; k--) if (!strcmp(countries[k].name, g_places[i].country)) { c = k; break; }
+		if (c < 0) { c = ncountries++; snprintf(countries[c].name, sizeof countries[c].name, "%s", g_places[i].country[0] ? g_places[i].country : "?"); }
+		countries[c].nplaces++; countries[c].nstations += g_places[i].size; cidx[i] = c;
+	}
+	/* stable sort by name, remembering mapping */
+	int *order = (int *)malloc(sizeof(int) * (ncountries + 1));
+	for (int k = 0; k < ncountries; k++) order[k] = k;
+	Country *sorted = (Country *)malloc(sizeof(Country) * (ncountries + 1));
+	memcpy(sorted, countries, sizeof(Country) * ncountries);
+	qsort(sorted, ncountries, sizeof(Country), cmp_country);
+	int *remap = (int *)malloc(sizeof(int) * (ncountries + 1));
+	for (int k = 0; k < ncountries; k++) for (int j = 0; j < ncountries; j++) if (!strcmp(sorted[j].name, countries[k].name)) { remap[k] = j; break; }
+	free(countries); countries = sorted;
+	int off = 0; for (int k = 0; k < ncountries; k++) { countries[k].first = off; off += countries[k].nplaces; countries[k].nplaces = 0; }
+	country_places = (int *)malloc(sizeof(int) * (g_nplaces + 1));
+	for (int i = 0; i < g_nplaces; i++) { Country &c = countries[remap[cidx[i]]]; country_places[c.first + c.nplaces++] = i; }
+	sort_base = g_places;
+	for (int k = 0; k < ncountries; k++) qsort(country_places + countries[k].first, countries[k].nplaces, sizeof(int), cmp_place_size);
+	free(order); free(remap); free(cidx);
+	cfilter = (const Country **)malloc(sizeof(Country *) * (ncountries + 1));
+}
+
+/* lower-case ASCII with common Latin-1 accents folded, for matching */
+static void fold(const char *s, char *o, size_t n)
+{
+	size_t k = 0;
+	for (const unsigned char *p = (const unsigned char *)s; *p && k + 1 < n; p++) {
+		int c = *p;
+		if (c == 0xC3 && p[1]) {
+			int d = p[1] | 0x20; p++;
+			c = (d >= 0xE0 && d <= 0xE5) ? 'a' : (d == 0xE7) ? 'c' : (d >= 0xE8 && d <= 0xEB) ? 'e' : (d >= 0xEC && d <= 0xEF) ? 'i' :
+			    (d == 0xF1) ? 'n' : (d >= 0xF2 && d <= 0xF6) ? 'o' : (d >= 0xF9 && d <= 0xFC) ? 'u' : '?';
+		}
+		o[k++] = (char)tolower(c);
+	}
+	o[k] = 0;
+}
+static void apply_filter()
+{
+	char q[40]; fold(query, q, sizeof q);
+	ncfilter = 0;
+	for (int k = 0; k < ncountries; k++) {
+		char nm[64]; fold(countries[k].name, nm, sizeof nm);
+		if (!q[0] || strstr(nm, q)) cfilter[ncfilter++] = &countries[k];
+	}
+	/* prefix matches first */
+	if (q[0]) { int w = 0; for (int i = 0; i < ncfilter; i++) { char nm[64]; fold(cfilter[i]->name, nm, sizeof nm); if (!strncmp(nm, q, strlen(q))) { const Country *t = cfilter[i]; memmove(&cfilter[w + 1], &cfilter[w], (i - w) * sizeof(*cfilter)); cfilter[w++] = t; } } }
+}
+
+/* ---------- config ---------- */
 static void conf_save(const UiModel &m)
 {
 	FILE *f = fopen(CONF_FILE, "w"); if (!f) return;
@@ -93,7 +195,7 @@ static void conf_load(UiModel &m)
 {
 	FILE *f = fopen(CONF_FILE, "r"); if (!f) return;
 	float lo, la, z, v; int t;
-	if (fscanf(f, "%f %f %f %f %d", &lo, &la, &z, &v, &t) == 5) { m.lon = lo; m.lat = la; m.zoom = z < 1 ? 1 : z; player_set_volume(v); g_tls_verify = t; }
+	if (fscanf(f, "%f %f %f %f %d", &lo, &la, &z, &v, &t) == 5) { m.lon = lo; m.lat = la; m.zoom = z < 1 ? 1 : (z > 40 ? 40 : z); player_set_volume(v); g_tls_verify = t; }
 	fclose(f);
 }
 
@@ -101,26 +203,9 @@ static void conf_load(UiModel &m)
 static UiModel M;
 static char now_name[96], now_place[96], now_id[16];
 static float tgt_lon, tgt_lat, tgt_zoom; static bool anim_cam = false;
+static UiView back_from_stations = UV_MAP;
 
-static void toast(const char *t) { static char buf[96]; snprintf(buf, sizeof buf, "%s", t); M.toast = buf; M.toast_t = 90; }
-static void find_hover()
-{
-	M.hover = -1;
-	if (!g_places || M.loading == 1) return;
-	float cx, cy; ui_view_center(&cx, &cy);
-	float unit = display_height >= 900 ? 12.f : 8.f, lim = 4.5f * unit, best = lim * lim;
-	for (int i = 0; i < g_nplaces; i++) {
-		float dl = g_places[i].lon - M.lon; if (dl > 180) dl -= 360; if (dl < -180) dl += 360;
-		if (fabsf(g_places[i].lat - M.lat) > 60.f / M.zoom + 1.f) continue;   /* cheap reject */
-		float x, y;
-		if (!ui_project(&M, g_places[i].lon, g_places[i].lat, &x, &y)) continue;
-		float dx = x - cx, dy = y - cy, d = dx * dx + dy * dy;
-		if (d > lim * lim) continue;
-		/* prefer bigger cities when distances are similar */
-		float score = d / (1.f + 0.15f * sqrtf((float)g_places[i].size));
-		if (score < best) { best = score; M.hover = i; }
-	}
-}
+static void toast(const char *t) { static char buf[96]; snprintf(buf, sizeof buf, "%s", t); M.toast = buf; M.toast_t = 120; }
 
 static void play(const char *id, const char *name, const char *place)
 {
@@ -129,26 +214,35 @@ static void play(const char *id, const char *name, const char *place)
 	snprintf(now_id, sizeof now_id, "%s", id); snprintf(now_name, sizeof now_name, "%s", name); snprintf(now_place, sizeof now_place, "%s", place);
 	player_play(url);
 }
-
-static void open_stations(int pi)
+static void fly_to(const Place &p, float min_zoom)
+{
+	tgt_lat = p.lat; tgt_lon = p.lon; tgt_zoom = M.zoom < min_zoom ? min_zoom : M.zoom; anim_cam = true;
+}
+static void open_stations(int pi, UiView back)
 {
 	M.panel_place = &g_places[pi];
 	M.st_sel = M.st_top = 0; M.nst = 0; g_nstations = 0; M.error = NULL;
 	job_start(J_STATIONS, g_places[pi].id);
-	M.loading = 2; M.view = UV_STATIONS;
-	/* shift the map so the city sits in the visible area left of the panel */
-	tgt_zoom = M.zoom < 4 ? 4 : M.zoom;
-	tgt_lat = g_places[pi].lat; tgt_lon = g_places[pi].lon;
-	anim_cam = true;
+	M.loading = 2; M.view = UV_STATIONS; back_from_stations = back;
+	fly_to(g_places[pi], 4);
 }
-
-static void scroll_fix(int sel, int *top, int n)
+static void scroll_fix(int sel, int *top, int n, int rows)
 {
-	int rows = ui_list_rows();
 	if (sel < *top) *top = sel;
 	if (sel >= *top + rows) *top = sel - rows + 1;
 	if (*top > n - rows) *top = n - rows > 0 ? n - rows : 0;
 	if (*top < 0) *top = 0;
+}
+/* list navigation shared by all lists; returns true if selection moved */
+static bool list_nav(int *sel, int *top, int n, int rows, bool up, bool dn, bool pgup, bool pgdn)
+{
+	if (n <= 0) return false;
+	int p = *sel;
+	if (up) (*sel)--; if (dn) (*sel)++;
+	if (pgup) *sel -= rows; if (pgdn) *sel += rows;
+	if (*sel < 0) *sel = 0; if (*sel >= n) *sel = n - 1;
+	scroll_fix(*sel, top, n, rows);
+	return p != *sel;
 }
 
 int main(int, const char **)
@@ -160,12 +254,16 @@ int main(int, const char **)
 	sysUtilRegisterCallback(0, sysutil_exit_callback, NULL);
 	setRenderTarget(curr_fb);
 	ui_init(display_width, display_height);
-	ui_load_earth(DATA_DIR "earth.565");
+	worker_start();
 
 	memset(&M, 0, sizeof M);
 	M.view = UV_MAP; M.lon = -30; M.lat = 15; M.zoom = 1.f; M.hover = -1;
-	M.stations = g_stations; M.favs = favs; M.is_fav = is_fav; M.map_dirty = true;
-	M.now_name = now_name; M.now_place = now_place; M.now_id = now_id;
+	M.stations = g_stations; M.favs = favs; M.is_fav = is_fav; M.map_dirty = true; M.ui_dirty = true;
+	M.now_name = now_name; M.now_place = now_place; M.now_id = now_id; M.query = query;
+	/* first frame while the 16 MB texture loads */
+	ui_render(&M); gfx_present(color_buffer[curr_fb]); flip();
+	if (!ui_load_earth(DATA_DIR "earth.565")) toast("No se encontró earth.565 (globo sin textura)");
+	M.map_dirty = true;
 
 	bool net_ok = http_init();
 	bool audio_ok = player_init();
@@ -175,126 +273,173 @@ int main(int, const char **)
 	if (!audio_ok) toast("No se pudo abrir la salida de audio");
 
 	padInfo pinfo; padData pd;
-	u32 prev = 0; int rep = 0; int save_timer = 0; int still = 0;
+	u32 prev = 0; int rep = 0, save_timer = 0, still = 0, last_hover = -2, last_state = -1;
+	float last_vol = -1; int fps_frames = 0; u64 fps_t0 = now_us();
 
 	while (running) {
 		sysUtilCheckCallback();
 		ioPadGetInfo(&pinfo);
-		u32 b = 0; int lx = 0, ly = 0, ry = 0;
+		static int lx = 0, ly = 0, ry = 0;
+		u32 b = 0; bool padfound = false;
 		for (int i = 0; i < MAX_PADS; i++) {
 			if (!pinfo.status[i]) continue;
 			ioPadGetData(i, &pd);
+			padfound = true;
+			if (pd.len == 0) { b = prev; break; }   /* no new data this frame: keep buttons and sticks */
 			b = (pd.BTN_CROSS << 0) | (pd.BTN_CIRCLE << 1) | (pd.BTN_TRIANGLE << 2) | (pd.BTN_SQUARE << 3) |
 			    (pd.BTN_START << 4) | (pd.BTN_SELECT << 5) | (pd.BTN_L1 << 6) | (pd.BTN_R1 << 7) | (pd.BTN_L2 << 8) | (pd.BTN_R2 << 9) |
-			    (pd.BTN_UP << 10) | (pd.BTN_DOWN << 11) | (pd.BTN_LEFT << 12) | (pd.BTN_RIGHT << 13) | (pd.BTN_L3 << 14);
+			    (pd.BTN_UP << 10) | (pd.BTN_DOWN << 11) | (pd.BTN_LEFT << 12) | (pd.BTN_RIGHT << 13) | (pd.BTN_L3 << 14) | (pd.BTN_R3 << 15);
 			int hx = (int)pd.ANA_L_H - 128, hy = (int)pd.ANA_L_V - 128, rv = (int)pd.ANA_R_V - 128;
 			lx = abs(hx) > 28 ? hx : 0; ly = abs(hy) > 28 ? hy : 0; ry = abs(rv) > 28 ? rv : 0;
 			break;
 		}
+		if (!padfound) { lx = ly = ry = 0; }
 		u32 pr = b & ~prev; prev = b;
 		#define P(bit) (pr & (1u << (bit)))
 		#define D(bit) (b & (1u << (bit)))
-		bool stepup = false, stepdn = false;
-		if (D(10) || D(11) || ly) { if (rep == 0 || (rep > 18 && rep % 3 == 0)) { stepup = D(10) || ly < -60; stepdn = D(11) || ly > 60; } rep++; } else rep = 0;
-		bool redraw = false;
+		bool stepup = false, stepdn = false, stepl = false, stepr = false;
+		if (D(10) || D(11) || D(12) || D(13) || ly) {
+			if (rep == 0 || (rep > 24 && rep % 5 == 0)) { stepup = D(10) || ly < -60; stepdn = D(11) || ly > 60; stepl = D(12); stepr = D(13); }
+			rep++;
+		} else rep = 0;
+		bool uidirty = pr != 0;
 
 		/* background jobs */
 		if (M.loading && job_state != 1) {
 			if (job_kind == J_PLACES) {
-				if (job_state == 2) { M.places = g_places; M.nplaces = g_nplaces; M.error = NULL; M.map_dirty = true; find_hover(); char t[64]; snprintf(t, sizeof t, "%d ciudades con radio", g_nplaces); toast(t); }
-				else M.error = job_err;
+				if (job_state == 2) {
+					M.places = g_places; M.nplaces = g_nplaces; M.error = NULL; M.map_dirty = true;
+					ui_set_places(g_places, g_nplaces); build_countries(); apply_filter();
+					char t[64]; snprintf(t, sizeof t, "%d ciudades con radio", g_nplaces); toast(t);
+				} else M.error = job_err;
 			} else if (job_kind == J_STATIONS) { if (job_state == 2) { M.nst = g_nstations; M.error = NULL; } else M.error = job_err; }
-			M.loading = 0; redraw = true;
+			M.loading = 0; uidirty = true;
 		}
 
-		/* global */
+		/* global buttons */
 		if (P(2)) { player_stop(); toast("Detenido"); }
-		if (P(5)) { g_tls_verify = !g_tls_verify; toast(g_tls_verify ? "Verificación TLS activada" : "Verificación TLS desactivada"); }
-		if (D(8) || D(9)) { player_set_volume(player_get_volume() + (D(9) ? 0.01f : -0.01f)); redraw = true; save_timer = 120; }
-		if (P(4)) { M.view = M.view == UV_FAVS ? UV_MAP : UV_FAVS; M.fav_sel = 0; M.fav_top = 0; redraw = true; }
+		if (P(15)) { g_tls_verify = !g_tls_verify; toast(g_tls_verify ? "Verificación TLS activada" : "Verificación TLS desactivada"); save_timer = 60; }
+		if (D(8) || D(9)) { player_set_volume(player_get_volume() + (D(9) ? 0.01f : -0.01f)); save_timer = 120; }
+		if (P(4) && !M.kb_open) { M.view = M.view == UV_FAVS ? UV_MAP : UV_FAVS; M.fav_sel = M.fav_top = 0; }
+		if (P(5) && !M.kb_open) { if (M.view == UV_COUNTRIES || M.view == UV_CITIES) M.view = UV_MAP; else { M.view = UV_COUNTRIES; apply_filter(); M.c_sel = M.c_top = 0; } }
 
+		bool moved = false;
 		if (M.view == UV_MAP) {
-			if (M.error && !M.loading && P(0) && net_ok) { job_start(J_PLACES, NULL); M.loading = 1; M.error = NULL; redraw = true; }
-			float spd = 1.4f / M.zoom;
+			if (M.error && !M.loading && P(0) && net_ok) { job_start(J_PLACES, NULL); M.loading = 1; M.error = NULL; }
+			float spd = 1.5f / M.zoom;
 			float mx = (D(13) ? 1.f : 0.f) - (D(12) ? 1.f : 0.f) + lx / 100.f;
 			float my = (D(10) ? 1.f : 0.f) - (D(11) ? 1.f : 0.f) - ly / 100.f;
 			if (mx || my) {
-				M.lon += mx * spd; M.lat += my * spd; anim_cam = false;
+				M.lon += mx * spd / fmaxf(0.25f, cosf(M.lat * 0.0174533f)); M.lat += my * spd; anim_cam = false;
 				if (M.lon > 180) M.lon -= 360; if (M.lon < -180) M.lon += 360;
 				if (M.lat > 85) M.lat = 85; if (M.lat < -85) M.lat = -85;
-				M.map_dirty = true; save_timer = 120;
+				moved = true;
 			}
-			float zf = 1.f;
-			if (D(7)) zf *= 1.035f; if (D(6)) zf /= 1.035f;
-			if (ry) zf *= 1.f - ry / 128.f * 0.04f;
-			if (zf != 1.f) { M.zoom *= zf; if (M.zoom < 1) M.zoom = 1; if (M.zoom > 60) M.zoom = 60; M.map_dirty = true; anim_cam = false; save_timer = 120; }
-			if (P(14) && M.nplaces) {             /* L3: random city */
-				int i = rand() % M.nplaces;
-				tgt_lon = g_places[i].lon; tgt_lat = g_places[i].lat; tgt_zoom = M.zoom < 5 ? 5 : M.zoom; anim_cam = true;
-				toast("Viajando a un lugar al azar…");
-			}
-			if (M.map_dirty) find_hover();
-			if (P(0) && M.hover >= 0 && !M.loading) open_stations(M.hover);
+			if (P(14) && M.nplaces) { fly_to(g_places[rand() % M.nplaces], 5); toast("Viajando a un lugar al azar…"); }
+			if (P(0) && M.hover >= 0 && !M.loading) open_stations(M.hover, UV_MAP);
 		} else if (M.view == UV_STATIONS) {
-			if (P(1)) { M.view = UV_MAP; anim_cam = false; find_hover(); redraw = true; }
-			if (M.nst > 0) {
-				int ps = M.st_sel;
-				if (stepup) M.st_sel--; if (stepdn) M.st_sel++;
-				if (P(6)) M.st_sel -= ui_list_rows(); if (P(7)) M.st_sel += ui_list_rows();
-				if (M.st_sel < 0) M.st_sel = 0; if (M.st_sel >= M.nst) M.st_sel = M.nst - 1;
-				if (ps != M.st_sel) redraw = true;
-				scroll_fix(M.st_sel, &M.st_top, M.nst);
+			if (P(1)) { M.view = back_from_stations; anim_cam = false; }
+			int rows = ui_list_rows_ex(false, true);
+			list_nav(&M.st_sel, &M.st_top, M.nst, rows, stepup, stepdn, P(6), P(7));
+			if (M.nst > 0 && !M.loading) {
 				const Station &s = g_stations[M.st_sel];
 				char place[96]; snprintf(place, sizeof place, "%s, %s", M.panel_place->title, M.panel_place->country);
-				if (P(0)) { if (audio_ok) play(s.id, s.name, place); redraw = true; }
-				if (P(3)) { toast(fav_toggle(s.id, s.name, place) ? "Añadido a favoritos" : "Quitado de favoritos"); }
+				if (P(0) && audio_ok) play(s.id, s.name, place);
+				if (P(3)) toast(fav_toggle(s.id, s.name, place) ? "Añadido a favoritos" : "Quitado de favoritos");
 			}
-		} else {
-			if (P(1)) { M.view = UV_MAP; redraw = true; }
+		} else if (M.view == UV_FAVS) {
+			if (P(1)) M.view = UV_MAP;
+			int rows = ui_list_rows_ex(false, true);
+			list_nav(&M.fav_sel, &M.fav_top, nfav, rows, stepup, stepdn, P(6), P(7));
 			if (nfav > 0) {
-				int ps = M.fav_sel;
-				if (stepup) M.fav_sel--; if (stepdn) M.fav_sel++;
-				if (P(6)) M.fav_sel -= ui_list_rows(); if (P(7)) M.fav_sel += ui_list_rows();
-				if (M.fav_sel < 0) M.fav_sel = 0; if (M.fav_sel >= nfav) M.fav_sel = nfav - 1;
-				if (ps != M.fav_sel) redraw = true;
-				scroll_fix(M.fav_sel, &M.fav_top, nfav);
 				Fav f = favs[M.fav_sel];
-				if (P(0)) { if (audio_ok) play(f.id, f.name, f.place); redraw = true; }
+				if (P(0) && audio_ok) play(f.id, f.name, f.place);
 				if (P(3)) { fav_toggle(f.id, f.name, f.place); if (M.fav_sel >= nfav && nfav) M.fav_sel = nfav - 1; toast("Quitado de favoritos"); }
 			}
-			M.nfav = nfav;
+		} else if (M.view == UV_COUNTRIES) {
+			if (M.kb_open) {
+				int cols = UI_KB_COLS, k = M.kb_sel;
+				int nrows_letters = (26 + cols - 1) / cols;
+				if (stepr) k = k < 26 ? (k % cols == cols - 1 || k == 25 ? k - (k % cols) : k + 1) : (k == 28 ? 26 : k + 1);
+				if (stepl) k = k < 26 ? (k % cols == 0 ? (k + cols - 1 > 25 ? 25 : k + cols - 1) : k - 1) : (k == 26 ? 28 : k - 1);
+				if (stepdn) { if (k < 26) { k += cols; if (k > 25) k = 26 + ((k - cols) % cols) * 3 / cols; } else k = (k - 26) * 3; }
+				if (stepup) { if (k >= 26) { k = (nrows_letters - 1) * cols + (k - 26) * 2; if (k > 25) k = 25; } else if (k >= cols) k -= cols; }
+				M.kb_sel = k;
+				if (P(0)) {
+					size_t ql = strlen(query);
+					if (k < 26) { if (ql < sizeof query - 1) { query[ql] = 'A' + k; query[ql + 1] = 0; } }
+					else if (k == 26) { if (ql && ql < sizeof query - 1) { query[ql] = ' '; query[ql + 1] = 0; } }
+					else if (k == 27) { if (ql) query[ql - 1] = 0; }
+					else M.kb_open = false;
+					apply_filter(); M.c_sel = M.c_top = 0;
+				}
+				if (P(3)) { size_t ql = strlen(query); if (ql) query[ql - 1] = 0; apply_filter(); M.c_sel = M.c_top = 0; }
+				if (P(1) || P(4)) M.kb_open = false;
+			} else {
+				if (P(1)) M.view = UV_MAP;
+				if (P(3)) { M.kb_open = true; M.kb_sel = 0; }
+				int rows = ui_list_rows_ex(true, false);
+				list_nav(&M.c_sel, &M.c_top, ncfilter, rows, stepup, stepdn, P(6), P(7));
+				if (P(0) && ncfilter > 0) {
+					M.cur_country = cfilter[M.c_sel];
+					M.city_idx = country_places + M.cur_country->first; M.ncity = M.cur_country->nplaces; M.city_sel = M.city_top = 0;
+					M.view = UV_CITIES;
+					if (M.ncity) fly_to(g_places[M.city_idx[0]], 2.5f);
+				}
+			}
+			M.clist = cfilter; M.nclist = ncfilter;
+		} else if (M.view == UV_CITIES) {
+			if (P(1)) M.view = UV_COUNTRIES;
+			int rows = ui_list_rows_ex(false, false);
+			if (list_nav(&M.city_sel, &M.city_top, M.ncity, rows, stepup, stepdn, P(6), P(7))) fly_to(g_places[M.city_idx[M.city_sel]], M.zoom);
+			if (P(0) && M.ncity > 0) open_stations(M.city_idx[M.city_sel], UV_CITIES);
 		}
 		M.nfav = nfav;
+
+		/* zoom works in every view */
+		float zf = 1.f;
+		if (D(7) && (M.view == UV_MAP)) zf *= 1.03f;
+		if (D(6) && (M.view == UV_MAP)) zf /= 1.03f;
+		if (ry) zf *= 1.f - ry / 128.f * 0.035f;
+		if (zf != 1.f) { M.zoom *= zf; if (M.zoom < 1) M.zoom = 1; if (M.zoom > 40) M.zoom = 40; anim_cam = false; moved = true; }
 
 		/* camera animation */
 		if (anim_cam) {
 			float dl = tgt_lon - M.lon; if (dl > 180) dl -= 360; if (dl < -180) dl += 360;
 			M.lon += dl * 0.12f; M.lat += (tgt_lat - M.lat) * 0.12f; M.zoom *= powf(tgt_zoom / M.zoom, 0.12f);
-			if (fabsf(dl) < 0.01f && fabsf(tgt_lat - M.lat) < 0.01f && fabsf(M.zoom / tgt_zoom - 1) < 0.005f) { anim_cam = false; if (M.view == UV_MAP) find_hover(); }
-			M.map_dirty = true;
+			if (M.lon > 180) M.lon -= 360; if (M.lon < -180) M.lon += 360;
+			if (fabsf(dl) < 0.005f && fabsf(tgt_lat - M.lat) < 0.005f && fabsf(M.zoom / tgt_zoom - 1) < 0.003f) anim_cam = false;
+			moved = true;
 		}
+		if (moved) { M.map_dirty = true; save_timer = 120; still = 0; }
+		else still++;
 
-		if (M.map_dirty) { M.fast = true; still = 0; }
-		else if (++still == 6) { M.fast = false; M.map_dirty = true; }
+		/* hover only matters on the map; panel follows it */
+		int hv = M.view == UV_MAP ? ui_pick(&M) : -1;
+		if (hv != last_hover) { last_hover = hv; M.hover = hv; uidirty = true; }
+		if (still == 10) uidirty = true;     /* refresh "Cerca de aquí" once the globe stops */
 
 		/* player status */
 		M.pstate = player_state(); M.pfmt = player_format(); M.pmsg = player_message(); M.volume = player_get_volume(); M.tls = g_tls_verify;
+		if (M.pstate != last_state) { last_state = M.pstate; uidirty = true; }
+		if (M.volume != last_vol) { last_vol = M.volume; uidirty = true; }
 		if (M.toast_t > 0) M.toast_t--;
 		if (save_timer > 0 && --save_timer == 0) conf_save(M);
+		if (uidirty) M.ui_dirty = true;
 
-		static int last_state = -1; static unsigned slow = 0;
-		if (M.pstate != last_state) { last_state = M.pstate; redraw = true; }
-		if (pr) redraw = true;
-		/* animate at ~30 fps when something moves, otherwise only on change */
-		if (M.map_dirty || redraw || (ui_animating(&M) && (++slow & 1))) {
-			M.frame++;
-			ui_render(&M);
-			gfx_present(color_buffer[curr_fb]);
-			flip();
-		} else usleep(16000);
+		/* render every vblank (60 Hz); flip() waits for vsync */
+		M.frame++;
+		ui_render(&M);
+		gfx_present(color_buffer[curr_fb]);
+		flip();
+
+		fps_frames++;
+		u64 t = now_us();
+		if (t - fps_t0 >= 500000) { M.fps = fps_frames * 1e6f / (float)(t - fps_t0); fps_frames = 0; fps_t0 = t; }
 	}
 
 	conf_save(M);
+	w_quit = 1; if (w_ok) sysSemPost(sem_go, 1);
 	player_shutdown();
 	http_shutdown();
 	return 0;
