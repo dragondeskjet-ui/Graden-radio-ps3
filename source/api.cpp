@@ -14,41 +14,119 @@ Station g_stations[MAX_STATIONS]; int g_nstations = 0;
 
 static void cpy(char *d, size_t n, JNode *s) { d[0] = 0; if (s && s->type == J_STR && s->str) snprintf(d, n, "%s", s->str); }
 
+/* ---- single-pass scanner: no DOM, writes straight into the Place array ---- */
+static const char *ws(const char *p, const char *e) { while (p < e && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',')) p++; return p; }
+static const char *rd_str(const char *p, const char *e, char *o, size_t cap)
+{
+	size_t k = 0; p++;                                    /* opening quote */
+	while (p < e && *p != '"') {
+		unsigned c = (unsigned char)*p++; bool uni = false;
+		if (c == '\\' && p < e) {
+			c = (unsigned char)*p++;
+			if (c == 'n' || c == 't' || c == 'r') c = ' ';
+			else if (c == 'u' && p + 4 <= e) { c = 0; for (int i = 0; i < 4; i++) { char h = *p++; c = c * 16 + (h <= '9' ? h - '0' : (h | 32) - 'a' + 10); } uni = true; }
+		}
+		if (!o) continue;
+		if (!uni || c < 0x80) { if (k + 1 < cap) o[k++] = (char)c; }
+		else if (c < 0x800) { if (k + 2 < cap) { o[k++] = (char)(0xC0 | (c >> 6)); o[k++] = (char)(0x80 | (c & 63)); } }
+		else if (k + 3 < cap) { o[k++] = (char)(0xE0 | (c >> 12)); o[k++] = (char)(0x80 | ((c >> 6) & 63)); o[k++] = (char)(0x80 | (c & 63)); }
+	}
+	if (o) o[k] = 0;
+	return p < e ? p + 1 : p;
+}
+static const char *rd_num(const char *p, const char *e, double *v)
+{
+	bool neg = false; double r = 0; if (p < e && *p == '-') { neg = true; p++; }
+	while (p < e && *p >= '0' && *p <= '9') r = r * 10 + (*p++ - '0');
+	if (p < e && *p == '.') { p++; double f = 0.1; while (p < e && *p >= '0' && *p <= '9') { r += (*p++ - '0') * f; f *= 0.1; } }
+	if (p < e && (*p == 'e' || *p == 'E')) {
+		p++; bool en = false; if (p < e && (*p == '-' || *p == '+')) { en = *p == '-'; p++; }
+		int x = 0; while (p < e && *p >= '0' && *p <= '9' && x < 400) x = x * 10 + (*p++ - '0');
+		while (x-- > 0) r = en ? r / 10 : r * 10;
+	}
+	*v = neg ? -r : r; return p;
+}
+static const char *skip_val(const char *p, const char *e)
+{
+	if (p >= e) return p;
+	if (*p == '"') return rd_str(p, e, NULL, 0);
+	if (*p == '{' || *p == '[') {
+		int d = 0;
+		while (p < e) { char c = *p; if (c == '"') { p = rd_str(p, e, NULL, 0); continue; } if (c == '{' || c == '[') d++; else if (c == '}' || c == ']') { if (--d == 0) return p + 1; } p++; }
+		return p;
+	}
+	while (p < e && *p != ',' && *p != '}' && *p != ']') p++;
+	return p;
+}
+static int scan_places(const char *s, size_t n, Place **out)
+{
+	const char *e = s + n, *p = strstr(s, "\"list\"");
+	if (!p) return 0;
+	while (p < e && *p != '[') p++;
+	if (p >= e) return 0; p++;
+	int cap = 16384, k = 0;
+	Place *arr = (Place *)calloc(cap, sizeof(Place)); if (!arr) return 0;
+	for (;;) {
+		p = ws(p, e);
+		if (p >= e || *p != '{') break;
+		p++;
+		if (k >= cap) { cap *= 2; Place *t = (Place *)realloc(arr, cap * sizeof(Place)); if (!t) break; arr = t; memset(arr + k, 0, (cap - k) * sizeof(Place)); }
+		Place &q = arr[k]; q.size = 1; bool geo = false;
+		for (;;) {
+			p = ws(p, e);
+			if (p >= e) break;
+			if (*p == '}') { p++; break; }
+			if (*p != '"') { p++; continue; }
+			char key[16]; p = rd_str(p, e, key, sizeof key);
+			p = ws(p, e); if (p < e && *p == ':') p++; p = ws(p, e);
+			if (!strcmp(key, "id") && p < e && *p == '"') p = rd_str(p, e, q.id, sizeof q.id);
+			else if (!strcmp(key, "title") && p < e && *p == '"') p = rd_str(p, e, q.title, sizeof q.title);
+			else if (!strcmp(key, "country") && p < e && *p == '"') p = rd_str(p, e, q.country, sizeof q.country);
+			else if (!strcmp(key, "size") && p < e && *p != '"') { double v; p = rd_num(p, e, &v); q.size = v < 1 ? 1 : (v > 65535 ? 65535 : (u16)v); }
+			else if (!strcmp(key, "geo") && p < e && *p == '[') {
+				double lo, la; p = ws(p + 1, e); p = rd_num(p, e, &lo); p = ws(p, e); p = rd_num(p, e, &la);
+				q.lon = (float)lo; q.lat = (float)la; geo = true;
+				while (p < e && *p != ']') p++; if (p < e) p++;
+			} else p = skip_val(p, e);
+		}
+		if (geo && q.id[0]) k++; else memset(&q, 0, sizeof q);
+		if ((k & 511) == 511) usleep(300);
+	}
+	*out = arr; return k;
+}
+
+/* ---- on-disk cache: first run downloads, later runs are instant ---- */
+#define CACHE_FILE "/dev_hdd0/game/RGDN00001/USRDIR/places.bin"
+struct CacheHdr { char magic[4]; u32 count; u32 psize; u32 pad; };
+static bool cache_load()
+{
+	FILE *f = fopen(CACHE_FILE, "rb"); if (!f) return false;
+	CacheHdr h; bool ok = fread(&h, sizeof h, 1, f) == 1 && !memcmp(h.magic, "RGP3", 4) && h.psize == sizeof(Place) && h.count > 100 && h.count < 100000;
+	Place *arr = ok ? (Place *)malloc(h.count * sizeof(Place)) : NULL;
+	if (arr && fread(arr, sizeof(Place), h.count, f) == h.count) { free(g_places); g_places = arr; g_nplaces = (int)h.count; fclose(f); return true; }
+	free(arr); fclose(f); return false;
+}
+static void cache_save()
+{
+	FILE *f = fopen(CACHE_FILE, "wb"); if (!f) return;
+	CacheHdr h; memcpy(h.magic, "RGP3", 4); h.count = g_nplaces; h.psize = sizeof(Place); h.pad = 0;
+	fwrite(&h, sizeof h, 1, f); fwrite(g_places, sizeof(Place), g_nplaces, f); fclose(f);
+}
+
 bool api_load_places(char *err, size_t errlen)
 {
+	if (cache_load()) { rg_log("places: from cache (%d)", g_nplaces); return true; }
 	Buf b;
 	rg_log("places: download start");
 	if (!http_get(BASE "/places", &b, 32u << 20, err, errlen)) { rg_log("places: download failed: %s", err); return false; }
 	rg_log("places: downloaded %u bytes", (unsigned)b.n);
-	JDoc *d = json_parse(b.d, b.n);
+	b.d[b.n] = 0;
+	Place *arr = NULL; int k = scan_places(b.d, b.n, &arr);
 	buf_free(&b);
-	rg_log("places: json %s", d ? "ok" : "FAILED");
-	if (!d) { snprintf(err, errlen, "JSON invalido (places)"); return false; }
-	JNode *list = json_get(json_get(d->root, "data"), "list");
-	if (!list || list->type != J_ARR) { json_free(d); snprintf(err, errlen, "Respuesta inesperada (places)"); return false; }
-	int cnt = 0;
-	for (JNode *n = list->child; n; n = n->next) cnt++;
-	Place *arr = (Place *)calloc(cnt ? cnt : 1, sizeof(Place));
-	if (!arr) { json_free(d); snprintf(err, errlen, "Sin memoria"); return false; }
-	int k = 0;
-	for (JNode *n = list->child; n; n = n->next) {
-		if (n->type != J_OBJ) continue;
-		JNode *geo = json_get(n, "geo");
-		if (!geo || geo->type != J_ARR || !geo->child || !geo->child->next) continue;
-		if ((k & 511) == 511) usleep(300);
-		Place &p = arr[k];
-		p.lon = (float)geo->child->num; p.lat = (float)geo->child->next->num;
-		cpy(p.id, sizeof p.id, json_get(n, "id"));
-		cpy(p.title, sizeof p.title, json_get(n, "title"));
-		cpy(p.country, sizeof p.country, json_get(n, "country"));
-		JNode *sz = json_get(n, "size");
-		p.size = (sz && sz->type == J_NUM) ? (u16)(sz->num > 65535 ? 65535 : sz->num) : 1;
-		if (p.id[0]) k++;
-	}
-	json_free(d);
-	rg_log("places: built %d of %d", k, cnt);
+	rg_log("places: scanned %d", k);
+	if (k == 0) { free(arr); snprintf(err, errlen, "Respuesta inesperada (places)"); return false; }
 	free(g_places); g_places = arr; g_nplaces = k;
-	if (k == 0) { snprintf(err, errlen, "Lista de lugares vacia"); return false; }
+	cache_save(); rg_log("places: cache saved");
 	return true;
 }
 
