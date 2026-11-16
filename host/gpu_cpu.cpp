@@ -8,8 +8,6 @@
 static int W, H; static u32 *frame;
 struct TexS { u32 *px; int w, h; } TX[TEX_COUNT];
 static u16 *earth; static int ew = 4096, eh = 2048;
-struct Q { float x, y, z, u0, v0, u1, v1, size, r, g, b, a; };
-static Q *quads; static int nq;
 
 u32 *gpu_host_frame() { return frame; }
 bool gpu_init(int w, int h) { W = w; H = h; frame = (u32 *)malloc((size_t)w * h * 4); return true; }
@@ -26,22 +24,6 @@ void gpu_upload(int t, const u32 *argb, int w, int h)
 	if (!TX[t].px || TX[t].w != w || TX[t].h != h) { free(TX[t].px); TX[t].px = (u32 *)malloc((size_t)w * h * 4); TX[t].w = w; TX[t].h = h; }
 	memcpy(TX[t].px, argb, (size_t)w * h * 4);
 }
-void gpu_set_places(const Place *p, int n, const float *uvd, const float *uvg)
-{
-	free(quads); quads = (Q *)malloc(sizeof(Q) * (n * 2 + 1)); nq = 0;
-	const float d = 3.14159265f / 180.f;
-	for (int pass = 0; pass < 2; pass++) for (int i = 0; i < n; i++) {
-		if (pass == 0 && p[i].size < 12) continue;
-		float t = p[i].size >= 40 ? 1.f : p[i].size / 40.f, rad = 0.9f + 1.4f * sqrtf(t);
-		Q &q = quads[nq++];
-		q.x = cosf(p[i].lat * d) * cosf(p[i].lon * d); q.y = cosf(p[i].lat * d) * sinf(p[i].lon * d); q.z = sinf(p[i].lat * d);
-		const float *uv = pass == 0 ? uvg : uvd; q.u0 = uv[0]; q.v0 = uv[1]; q.u1 = uv[2]; q.v1 = uv[3];
-		q.size = pass == 0 ? rad * 2.4f + 1.f : rad + 1.f;
-		float a = pass == 0 ? 0.16f : 0.65f + 0.35f * t;
-		q.r = (0.18f + 0.43f * t) * a; q.g = (0.83f + 0.17f * t) * a; q.b = (0.60f + 0.24f * t) * a; q.a = a;
-	}
-}
-
 static inline void over(u32 &d, float r, float g, float b, float a)
 {
 	float dr = ((d >> 16) & 255) / 255.f, dg = ((d >> 8) & 255) / 255.f, db = (d & 255) / 255.f;
@@ -80,7 +62,7 @@ static void quad(int tex, float x, float y, float w, float h, float u0, float v0
 }
 static void sprites(const Sprite *s, int n) { for (int i = 0; i < n; i++) { float c[4] = { s[i].r, s[i].g, s[i].b, s[i].a }; quad(s[i].tex, s[i].x, s[i].y, s[i].w, s[i].h, s[i].u0, s[i].v0, s[i].u1, s[i].v1, c, s[i].rot); } }
 
-void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *fg, int nfg)
+void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *dots, int ndots, const Sprite *fg, int nfg)
 {
 	for (int i = 0; i < W * H; i++) frame[i] = 0xFF03060D;
 	sprites(bg, nbg);
@@ -111,12 +93,6 @@ void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *fg, 
 			frame[py * W + px] = 0xFF000000u | ((int)(fminf(rr, 1) * 255) << 16) | ((int)(fminf(gg, 1) * 255) << 8) | (int)(fminf(bb, 1) * 255);
 		}
 	}
-	for (int i = 0; i < nq; i++) {
-		const Q &q = quads[i];
-		float depth = q.x * vx + q.y * vy + q.z * vz; if (depth <= 0.03f) continue;
-		float x = g.cx + g.R * (q.x * ex + q.y * ey), y = g.cy - g.R * (q.x * nx + q.y * ny + q.z * nz), s = q.size * g.dot_scale;
-		float c[4] = { q.r, q.g, q.b, q.a };
-		quad(TEX_ATLAS, x - s, y - s, 2 * s, 2 * s, q.u0, q.v0, q.u1, q.v1, c, 0);
-	}
+	sprites(dots, ndots);
 	sprites(fg, nfg);
 }

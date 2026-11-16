@@ -15,11 +15,10 @@
 #include "fs2d_fpo.h"
 #include "vsglobe_vpo.h"
 #include "fsglobe_fpo.h"
-#include "vsdots_vpo.h"
 
 struct Prog { rsxVertexProgram *vp; void *vucode; rsxFragmentProgram *fp; void *fucode; u32 foff; };
-static Prog P2D, PGLOBE, PDOTS;
-static rsxProgramConst *c2d_scr, *cg_east, *cg_north, *cg_view, *cg_scr, *cd_east, *cd_north, *cd_view, *cd_scr, *cd_scale;
+static Prog P2D, PGLOBE;
+static rsxProgramConst *c2d_scr, *cg_east, *cg_north, *cg_view, *cg_scr;
 static int u2d_tex, ug_tex;
 
 struct Tex { u32 *mem[2]; u32 off[2]; int w, h, cur, fmt; bool dbl; };
@@ -30,12 +29,9 @@ static int W, H;
 /* globe mesh */
 struct GV { float x, y, z, u, v; };
 static GV *gverts; static u16 *gidx; static u32 gverts_off, gidx_off; static int gnidx;
-/* dots */
-struct DV { float x, y, z, u, v, cx, cy, size, r, g, b, a; };
-static DV *dverts; static u32 dverts_off; static int ndverts;
 /* sprites (double buffered) */
 struct SV { float x, y, u, v, r, g, b, a; };
-#define MAX_SPRITES 512
+#define MAX_SPRITES 24576
 static SV *sverts[2]; static u32 sverts_off[2]; static int sframe = 0, scursor = 0;
 
 static void load_prog(Prog &p, const void *vpo, const void *fpo)
@@ -138,17 +134,12 @@ bool gpu_init(int w, int h)
 	W = w; H = h;
 	load_prog(P2D, vs2d_vpo, fs2d_fpo);
 	load_prog(PGLOBE, vsglobe_vpo, fsglobe_fpo);
-	load_prog(PDOTS, vsdots_vpo, NULL);
 	c2d_scr = rsxVertexProgramGetConst(P2D.vp, "scr");
 	u2d_tex = tex_index(P2D.fp, "tex");
 	cg_east = rsxVertexProgramGetConst(PGLOBE.vp, "east"); cg_north = rsxVertexProgramGetConst(PGLOBE.vp, "north");
 	cg_view = rsxVertexProgramGetConst(PGLOBE.vp, "view"); cg_scr = rsxVertexProgramGetConst(PGLOBE.vp, "scr");
 	ug_tex = tex_index(PGLOBE.fp, "tex");
-	cd_east = rsxVertexProgramGetConst(PDOTS.vp, "east"); cd_north = rsxVertexProgramGetConst(PDOTS.vp, "north");
-	cd_view = rsxVertexProgramGetConst(PDOTS.vp, "view"); cd_scr = rsxVertexProgramGetConst(PDOTS.vp, "scr");
-	cd_scale = rsxVertexProgramGetConst(PDOTS.vp, "dot_scale");
-	rg_log("gpu_init: 2d scr=%p | globe e=%p n=%p v=%p s=%p | dots e=%p n=%p v=%p s=%p k=%p | tex2d=%d texg=%d",
-	       c2d_scr, cg_east, cg_north, cg_view, cg_scr, cd_east, cd_north, cd_view, cd_scr, cd_scale, u2d_tex, ug_tex);
+	rg_log("gpu_init: 2d scr=%p | globe e=%p n=%p v=%p s=%p | tex2d=%d texg=%d", c2d_scr, cg_east, cg_north, cg_view, cg_scr, u2d_tex, ug_tex);
 	for (int i = 0; i < 2; i++) { sverts[i] = (SV *)rsxMemalign(128, MAX_SPRITES * 4 * sizeof(SV)); rsxAddressToOffset(sverts[i], &sverts_off[i]); }
 	build_globe_mesh();
 	earth_lo = (u16 *)rsxMemalign(128, 8 * 8 * 2);
@@ -183,41 +174,6 @@ bool gpu_load_earth(const char *path)
 	return true;
 }
 
-void gpu_set_places(const Place *p, int n, const float *uvd, const float *uvg)
-{
-	/* glow quad for big cities + core quad for every city */
-	int nglow = 0; for (int i = 0; i < n; i++) if (p[i].size >= 12) nglow++;
-	int nq = n + nglow;
-	rg_log("gpu_set_places: n=%d glow=%d bytes=%u", n, nglow, (unsigned)((size_t)nq * 4 * sizeof(DV)));
-	DV *v = (DV *)rsxMemalign(128, (size_t)nq * 4 * sizeof(DV));
-	if (!v) { rg_log("gpu_set_places: rsxMemalign FAILED"); return; }
-	const float d = 3.14159265f / 180.f;
-	const float cxs[4] = { -1, 1, 1, -1 }, cys[4] = { -1, -1, 1, 1 };
-	int k = 0;
-	for (int pass = 0; pass < 2; pass++) for (int i = 0; i < n; i++) {
-		float t = p[i].size >= 40 ? 1.f : p[i].size / 40.f;
-		if (pass == 0 && p[i].size < 12) continue;
-		float x = cosf(p[i].lat * d) * cosf(p[i].lon * d), y = cosf(p[i].lat * d) * sinf(p[i].lon * d), z = sinf(p[i].lat * d);
-		float rad = 0.9f + 1.4f * sqrtf(t);
-		float size = pass == 0 ? rad * 2.4f + 1.f : rad + 1.f;            /* quad half-size in px */
-		const float *uv = pass == 0 ? uvg : uvd;                          /* u0 v0 u1 v1 */
-		float a = pass == 0 ? 0.16f : 0.65f + 0.35f * t;
-		float cr = (0.18f + (0.61f - 0.18f) * t), cg = (0.83f + (1.0f - 0.83f) * t), cb = (0.60f + (0.84f - 0.60f) * t);
-		for (int c = 0; c < 4; c++) {
-			DV &q = v[k * 4 + c];
-			q.x = x; q.y = y; q.z = z;
-			q.u = cxs[c] < 0 ? uv[0] : uv[2]; q.v = cys[c] < 0 ? uv[1] : uv[3];
-			q.cx = cxs[c]; q.cy = cys[c]; q.size = size;
-			q.r = cr * a; q.g = cg * a; q.b = cb * a; q.a = a;
-		}
-		k++;
-	}
-	if (dverts) rsxFree(dverts);
-	dverts = v; ndverts = k * 4;
-	rsxAddressToOffset(dverts, &dverts_off);
-	rg_log("gpu_set_places: ok quads=%d offset=0x%x", k, dverts_off);
-}
-
 static void set_env()
 {
 	rsxSetColorMask(context, GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A);
@@ -250,7 +206,8 @@ static void draw_sprites(const Sprite *s, int ns)
 	for (int i = 0; i < ns; i++) {
 		const Sprite &q = s[i];
 		float cx = q.x + q.w / 2, cy = q.y + q.h / 2, hw = q.w / 2, hh = q.h / 2;
-		float cs = cosf(q.rot), sn = sinf(q.rot);
+		float cs = 1.f, sn = 0.f;
+		if (q.rot != 0.f) { cs = cosf(q.rot); sn = sinf(q.rot); }
 		const float ox[4] = { -hw, hw, hw, -hw }, oy[4] = { -hh, -hh, hh, hh };
 		const float us[4] = { q.u0, q.u1, q.u1, q.u0 }, vs[4] = { q.v0, q.v0, q.v1, q.v1 };
 		for (int c = 0; c < 4; c++) {
@@ -275,13 +232,16 @@ static void draw_sprites(const Sprite *s, int ns)
 		if (t.mem[0]) {
 			rsxInvalidateTextureCache(context, GCM_INVALIDATE_TEXTURE);
 			bind_tex(u2d_tex, t.off[t.cur], t.w, t.h, false, tex == TEX_ATLAS, false);
-			rsxDrawVertexArray(context, GCM_TYPE_QUADS, start * 4, (end - start) * 4);
+			for (int f = start; f < end; f += 2048) {
+				int cnt = end - f < 2048 ? end - f : 2048;
+				rsxDrawVertexArray(context, GCM_TYPE_QUADS, f * 4, cnt * 4);
+			}
 		}
 		start = end;
 	}
 }
 
-void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *s, int ns)
+void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *dots, int ndots, const Sprite *s, int ns)
 {
 	sframe ^= 1; scursor = 0;
 	set_env();
@@ -321,31 +281,12 @@ void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *s, i
 		rsxSetDepthTestEnable(context, GCM_FALSE); rsxSetDepthWriteEnable(context, GCM_FALSE);
 		blend_premul(true);
 
-		/* 3. station dots (atlas texture) */
-		if (dverts && T[TEX_ATLAS].mem[0]) {
-			rsxLoadVertexProgram(context, PDOTS.vp, PDOTS.vucode);
-			vparam(PDOTS.vp, cd_east, east);
-			vparam(PDOTS.vp, cd_north, north);
-			vparam(PDOTS.vp, cd_view, view);
-			vparam(PDOTS.vp, cd_scr, scr);
-			float ds[4] = { g.dot_scale, 0, 0, 0 };
-			vparam(PDOTS.vp, cd_scale, ds);
-			rsxLoadFragmentProgramLocation(context, P2D.fp, P2D.foff, GCM_LOCATION_RSX);
-			rsxInvalidateTextureCache(context, GCM_INVALIDATE_TEXTURE);
-			bind_tex(u2d_tex, T[TEX_ATLAS].off[0], T[TEX_ATLAS].w, T[TEX_ATLAS].h, false, true, false);
-			attrs_clear();
-			attr(GCM_VERTEX_ATTRIB_POS, dverts_off, sizeof(DV), 3);
-			attr(GCM_VERTEX_ATTRIB_TEX0, dverts_off + 12, sizeof(DV), 2);
-			attr(GCM_VERTEX_ATTRIB_TEX1, dverts_off + 20, sizeof(DV), 3);
-			attr(GCM_VERTEX_ATTRIB_COLOR0, dverts_off + 32, sizeof(DV), 4);
-			rsxInvalidateVertexCache(context);
-			for (int first = 0; first < ndverts; first += 8192) {
-				int cnt = ndverts - first < 8192 ? ndverts - first : 8192;
-				rsxDrawVertexArray(context, GCM_TYPE_QUADS, first, cnt);
-			}
-			static bool logged = false;
-			if (!logged) { logged = true; rg_log("gpu_frame: first dots draw submitted (%d vertices)", ndverts); }
-		}
+	}
+	/* 3. station dots */
+	draw_sprites(dots, ndots);
+	{
+		static bool logged = false;
+		if (!logged && ndots > 0) { logged = true; rg_log("gpu_frame: first dots submitted (%d sprites)", ndots); }
 	}
 
 	/* 4. UI layer + dynamic sprites */

@@ -52,7 +52,7 @@ static void apply_theme(const UiModel *m)
 /* ---------------- geometry ---------------- */
 static float globe_R(const UiModel *m) { return fminf(W - PX - PW, H) * 0.43f * m->zoom; }
 
-static float *pvx, *pvy, *pvz; static const Place *g_pl; static int g_np;
+static float *pvx, *pvy, *pvz; static const Place *g_pl; static int g_np; static Sprite *dotspr;
 struct Basis { float ex, ey, nx, ny, nz, cx, cy, cz; };
 static Basis basis(const UiModel *m)
 {
@@ -135,7 +135,7 @@ void ui_set_places(const Place *p, int n)
 	const float d = 0.0174533f;
 	for (int i = 0; i < n; i++) { float la = p[i].lat * d, lo = p[i].lon * d; pvx[i] = cosf(la) * cosf(lo); pvy[i] = cosf(la) * sinf(lo); pvz[i] = sinf(la); }
 	g_pl = p; g_np = n;
-	gpu_set_places(p, n, UVDISC, UVGLOW);
+	free(dotspr); dotspr = (Sprite *)malloc(sizeof(Sprite) * (2 * n + 1));
 }
 
 /* ---------------- widgets ---------------- */
@@ -599,7 +599,28 @@ void ui_frame(UiModel *m)
 		spr(VCX - TOAST_W / 2.f, 3 * U + HUD_H + U, TOAST_W, TOAST_H, NULL, 0xFFFFFF, a, 0, TEX_TOAST);
 	}
 
-	GlobeView g; g.lon = m->lon; g.lat = m->lat; g.R = R; g.cx = VCX; g.cy = VCY; g.show_globe = true;
-	g.dot_scale = (m->zoom < 2 ? 0.9f : (m->zoom < 8 ? 1.25f : 1.8f)) * (U / 8.f);
-	gpu_frame(g, bg, nbg, fg, nfg);
+	/* station dots: projected on the PPU (cheap with precomputed unit vectors), drawn as GPU sprites */
+	int nd = 0;
+	if (g_pl && dotspr && m->nplaces) {
+		Basis b = basis(m);
+		float ds = (m->zoom < 2 ? 0.9f : (m->zoom < 8 ? 1.25f : 1.8f)) * (U / 8.f);
+		for (int pass = 0; pass < 2; pass++) for (int i = 0; i < g_np; i++) {
+			int sz = g_pl[i].size;
+			if (pass == 0 && sz < 12) continue;
+			float depth = pvx[i] * b.cx + pvy[i] * b.cy + pvz[i] * b.cz; if (depth < 0.03f) continue;
+			float x = VCX + R * (pvx[i] * b.ex + pvy[i] * b.ey), y = VCY - R * (pvx[i] * b.nx + pvy[i] * b.ny + pvz[i] * b.nz);
+			if (x < -12 || y < -12 || x > W + 12 || y > H + 12) continue;
+			float t = sz >= 40 ? 1.f : sz / 40.f, rad = 0.9f + 1.4f * sqrtf(t);
+			float hs = (pass == 0 ? rad * 2.4f + 1.f : rad + 1.f) * ds;
+			const float *uv = pass == 0 ? UVGLOW : UVDISC;
+			float a = pass == 0 ? 0.16f : 0.65f + 0.35f * t;
+			Sprite &q = dotspr[nd++];
+			q.x = x - hs; q.y = y - hs; q.w = q.h = 2 * hs;
+			q.u0 = uv[0]; q.v0 = uv[1]; q.u1 = uv[2]; q.v1 = uv[3];
+			q.r = (0.18f + 0.43f * t) * a; q.g = (0.83f + 0.17f * t) * a; q.b = (0.60f + 0.24f * t) * a; q.a = a;
+			q.rot = 0; q.tex = TEX_ATLAS;
+		}
+	}
+	GlobeView g; g.lon = m->lon; g.lat = m->lat; g.R = R; g.cx = VCX; g.cy = VCY; g.show_globe = true; g.dot_scale = 1;
+	gpu_frame(g, bg, nbg, dotspr, nd, fg, nfg);
 }

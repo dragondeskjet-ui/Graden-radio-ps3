@@ -12,8 +12,8 @@ struct GlobeView { float lon, lat, R, cx, cy, dot_scale; bool show_globe; };
 
 bool gpu_init(int w, int h);
 bool gpu_load_earth(const char *path);           /* RGB565 BE 4096x2048 */
-void gpu_set_places(const Place *p, int n, const float *uv_disc, const float *uv_glow);
 /* upload premultiplied ARGB pixels (w x h) to a texture slot; double-buffered for dynamic ones */
 void gpu_upload(int tex, const u32 *argb, int w, int h);
-void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *fg, int nfg);
+/* draw order: background sprites, globe, dot sprites, foreground sprites (all sprites use the proven 2D shader) */
+void gpu_frame(const GlobeView &g, const Sprite *bg, int nbg, const Sprite *dots, int ndots, const Sprite *fg, int nfg);
 #endif
