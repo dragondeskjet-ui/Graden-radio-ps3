@@ -70,11 +70,20 @@ bool ui_project(const UiModel *m, float lon, float lat, float *x, float *y)
 	*x = VCX + R * (px * b.ex + py * b.ey); *y = VCY - R * (px * b.nx + py * b.ny + pz * b.nz);
 	return true;
 }
+/* level of detail: only the biggest cities show when zoomed out; smaller ones appear as you zoom in */
+static int *ord = NULL;                                   /* place indices, biggest first */
+static const Place *sort_src = NULL;
+static int cmp_ord(const void *a, const void *b) { return (int)sort_src[*(const int *)b].size - (int)sort_src[*(const int *)a].size; }
+static int lod_min(float zoom) { return zoom < 1.5f ? 40 : zoom < 2.5f ? 25 : zoom < 4.f ? 12 : zoom < 7.f ? 6 : zoom < 12.f ? 3 : 1; }
+#define MAX_DOTS 3000
+
 int ui_pick(const UiModel *m)
 {
 	if (!g_pl || !m->nplaces) return -1;
 	Basis b = basis(m); float R = globe_R(m), lim = 4.5f * U, best = 1e30f; int hit = -1;
-	for (int i = 0; i < g_np; i++) {
+	int mn = lod_min(m->zoom);
+	for (int oi = 0; oi < g_np; oi++) {
+		int i = ord[oi]; if (g_pl[i].size < mn) break;
 		float depth = pvx[i] * b.cx + pvy[i] * b.cy + pvz[i] * b.cz; if (depth < 0.03f) continue;
 		float dx = R * (pvx[i] * b.ex + pvy[i] * b.ey), dy = -R * (pvx[i] * b.nx + pvy[i] * b.ny + pvz[i] * b.nz);
 		if (dx > lim || dx < -lim || dy > lim || dy < -lim) continue;
@@ -139,7 +148,10 @@ void ui_set_places(const Place *p, int n)
 	const float d = 0.0174533f;
 	for (int i = 0; i < n; i++) { float la = p[i].lat * d, lo = p[i].lon * d; pvx[i] = cosf(la) * cosf(lo); pvy[i] = cosf(la) * sinf(lo); pvz[i] = sinf(la); }
 	g_pl = p; g_np = n;
-	free(dotspr); dotspr = (Sprite *)malloc(sizeof(Sprite) * (2 * n + 1));
+	free(ord); ord = (int *)malloc(sizeof(int) * (n + 1));
+	for (int i = 0; i < n; i++) ord[i] = i;
+	sort_src = p; qsort(ord, n, sizeof(int), cmp_ord);
+	free(dotspr); dotspr = (Sprite *)malloc(sizeof(Sprite) * (2 * MAX_DOTS + 2));
 }
 
 /* ---------------- widgets ---------------- */
@@ -610,9 +622,12 @@ void ui_frame(UiModel *m)
 	if (g_pl && dotspr && m->nplaces) {
 		Basis b = basis(m);
 		float ds = (m->zoom < 2 ? 0.9f : (m->zoom < 8 ? 1.25f : 1.8f)) * (U / 8.f);
-		for (int pass = 0; pass < 2; pass++) for (int i = 0; i < g_np; i++) {
-			int sz = g_pl[i].size;
-			if (pass == 0 && sz < 12) continue;
+		int mn = lod_min(m->zoom), shown = 0;
+		for (int pass = 0; pass < 2; pass++) for (int oi = 0; oi < g_np; oi++) {
+			int i = ord[oi], sz = g_pl[i].size;
+			if (sz < mn) break;                       /* sorted: everything after is smaller */
+			if (pass == 0 && sz < 12) break;
+			if (pass == 1 && shown >= MAX_DOTS) break;
 			float depth = pvx[i] * b.cx + pvy[i] * b.cy + pvz[i] * b.cz; if (depth < 0.03f) continue;
 			float x = VCX + R * (pvx[i] * b.ex + pvy[i] * b.ey), y = VCY - R * (pvx[i] * b.nx + pvy[i] * b.ny + pvz[i] * b.nz);
 			if (x < -12 || y < -12 || x > W + 12 || y > H + 12) continue;
@@ -620,6 +635,7 @@ void ui_frame(UiModel *m)
 			float hs = (pass == 0 ? rad * 2.4f + 1.f : rad + 1.f) * ds;
 			const float *uv = pass == 0 ? UVGLOW : UVDISC;
 			float a = pass == 0 ? 0.16f : 0.65f + 0.35f * t;
+			if (pass == 1) shown++; else if (nd >= MAX_DOTS) break;
 			Sprite &q = dotspr[nd++];
 			q.x = x - hs; q.y = y - hs; q.w = q.h = 2 * hs;
 			q.u0 = uv[0]; q.v0 = uv[1]; q.u1 = uv[2]; q.v1 = uv[3];
